@@ -38,11 +38,12 @@ func newPlayState() PlayState {
 	return PlayState{Playing: true, Duration: 300_000}
 }
 
-// NewSource starts a background AVRCP poller and returns immediately.
+// NewSource starts a background AVRCP poller and signal watcher, returning immediately.
 // It never returns an error — polling failures are handled gracefully.
 func NewSource() (*Source, error) {
 	s := &Source{state: newPlayState()}
 	go s.loop()
+	go s.watchSignals()
 	return s, nil
 }
 
@@ -98,6 +99,36 @@ func (s *Source) loop() {
 	}
 }
 
+// watchSignals runs dbus-monitor and triggers an immediate refresh whenever
+// the BlueZ MediaPlayer1 properties change (e.g. track skip, play/pause).
+// This ensures Track metadata is captured as soon as the phone sends it,
+// rather than waiting up to 500ms for the next poll.
+func (s *Source) watchSignals() {
+	for {
+		cmd := exec.Command("dbus-monitor", "--system",
+			"type=signal,sender=org.bluez,interface=org.freedesktop.DBus.Properties,member=PropertiesChanged")
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if err := cmd.Start(); err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			line := sc.Text()
+			// Only react to player-path signals, not adapter-level ones.
+			if strings.Contains(line, "/player") {
+				go s.refresh()
+			}
+		}
+		cmd.Wait()
+		time.Sleep(time.Second)
+	}
+}
+
 // findPlayerPath returns the D-Bus object path of the first BlueZ
 // MediaPlayer1 object by parsing `busctl tree org.bluez`.
 func findPlayerPath() string {
@@ -127,19 +158,50 @@ type busctlVariant struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// getProperty calls `busctl --system --json=short get-property ...` and returns
-// the parsed variant. Returns nil on any error.
-func getProperty(path, iface, prop string) *busctlVariant {
+// getAllProperties calls GetAll on org.bluez.MediaPlayer1 via busctl and returns
+// the property map. Returns nil on any error.
+func getAllProperties(path string) map[string]busctlVariant {
 	out, err := exec.Command("busctl", "--system", "--json=short",
-		"get-property", "org.bluez", path, iface, prop).Output()
+		"call", "org.bluez", path,
+		"org.freedesktop.DBus.Properties", "GetAll",
+		"s", "org.bluez.MediaPlayer1").Output()
 	if err != nil || len(out) == 0 {
 		return nil
 	}
-	var v busctlVariant
-	if err := json.Unmarshal(bytes.TrimSpace(out), &v); err != nil {
+	// busctl wraps the reply: {"type":"a{sv}","data":[{...}]}
+	var wrapper struct {
+		Data []map[string]busctlVariant `json:"data"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapper); err != nil || len(wrapper.Data) == 0 {
 		return nil
 	}
-	return &v
+	return wrapper.Data[0]
+}
+
+// getString extracts a string value from a busctlVariant map.
+func getString(props map[string]busctlVariant, key string) (string, bool) {
+	v, ok := props[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(v.Data, &s) != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// getUint32 extracts a uint32 value from a busctlVariant map.
+func getUint32(props map[string]busctlVariant, key string) (uint32, bool) {
+	v, ok := props[key]
+	if !ok {
+		return 0, false
+	}
+	var n uint32
+	if json.Unmarshal(v.Data, &n) != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (s *Source) logOnce(msg string) {
@@ -159,6 +221,11 @@ func (s *Source) refresh() {
 		return
 	}
 
+	props := getAllProperties(path)
+	if props == nil {
+		return
+	}
+
 	// Start from the existing state so we never lose previously-cached
 	// metadata (Title/Artist/Album) on a poll cycle where Track is absent.
 	s.mu.RLock()
@@ -167,29 +234,21 @@ func (s *Source) refresh() {
 
 	gotAny := false
 
-	// Position (uint32, milliseconds)
-	if v := getProperty(path, "org.bluez.MediaPlayer1", "Position"); v != nil {
-		var pos uint32
-		if json.Unmarshal(v.Data, &pos) == nil {
-			next.Position = pos
-			gotAny = true
-		}
+	if pos, ok := getUint32(props, "Position"); ok {
+		next.Position = pos
+		gotAny = true
 	}
 
-	// Status ("playing" | "paused" | "stopped" | "forward-seek" | "reverse-seek" | "error")
-	if v := getProperty(path, "org.bluez.MediaPlayer1", "Status"); v != nil {
-		var status string
-		if json.Unmarshal(v.Data, &status) == nil {
-			next.Playing = status == "playing"
-			gotAny = true
-		}
+	if status, ok := getString(props, "Status"); ok {
+		next.Playing = status == "playing"
+		gotAny = true
 	}
 
-	// Track is an a{sv} dict — busctl renders it as a JSON object.
-	// We parse Title, Artist, Album, Duration if present.
-	if v := getProperty(path, "org.bluez.MediaPlayer1", "Track"); v != nil {
+	// Track is an a{sv} nested inside the property map.
+	// busctl renders it as {"type":"a{sv}","data":{"Title":{...},...}}.
+	if trackProp, ok := props["Track"]; ok {
 		var track map[string]busctlVariant
-		if json.Unmarshal(v.Data, &track) == nil {
+		if json.Unmarshal(trackProp.Data, &track) == nil && len(track) > 0 {
 			if t, ok := track["Title"]; ok {
 				var title string
 				if json.Unmarshal(t.Data, &title) == nil && title != "" {
@@ -222,10 +281,8 @@ func (s *Source) refresh() {
 				next.Title, next.Artist, next.Album, next.Duration)
 			s.logOnce(msg)
 		} else {
-			s.logOnce("[AVRCP] track: failed to parse Track JSON")
+			s.logOnce("[AVRCP] Track property present but empty (phone not sending metadata)")
 		}
-	} else {
-		s.logOnce("[AVRCP] track property not available from " + path)
 	}
 
 	if !gotAny {
