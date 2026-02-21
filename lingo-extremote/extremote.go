@@ -51,6 +51,7 @@ var Lingos struct {
 	SetPlayStatusChangeNotification            `id:"0x0026"`
 	SetPlayStatusChangeNotificationShort       `id:"0x0026"`
 	PlayStatusChangeNotification               `id:"0x0027"`
+	PlayStatusChangeNotificationTrackIndex     `id:"0x0027"`
 	PlayCurrentSelection                       `id:"0x0028"`
 	PlayControl                                `id:"0x0029"`
 	GetTrackArtworkTimes                       `id:"0x002A"`
@@ -393,6 +394,12 @@ type SetPlayStatusChangeNotificationShort struct {
 type PlayStatusChangeNotification struct {
 	EventID     byte
 	PlayerState byte
+}
+
+// PlayStatusChangeNotificationTrackIndex sends EventID 0x01 (TrackIndexChanged).
+type PlayStatusChangeNotificationTrackIndex struct {
+	EventID    byte
+	TrackIndex uint32
 }
 type PlayCurrentSelection struct {
 	SelectedTrackIndex int32

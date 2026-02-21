@@ -51,9 +51,17 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		var info interface{}
 		switch msg.InfoType {
 		case TrackInfoCaps:
+			capLength := uint32(300_000)
+			if dev != nil {
+				cl, cp, _ := dev.PlaybackStatus()
+				if cp+300_000 > cl {
+					cl = cp + 300_000
+				}
+				capLength = cl
+			}
 			info = &TrackCaps{
 				Caps:         0x0,
-				TrackLength:  300 * 1000,
+				TrackLength:  capLength,
 				ChapterCount: 1,
 			}
 		case TrackInfoDescription, TrackInfoLyrics:
@@ -99,6 +107,12 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		if dev != nil {
 			length, pos, _ = dev.PlaybackStatus()
 		}
+		// Live radio streams have positions that grow unboundedly.
+		// Ensure length is always ahead of position so the car doesn't
+		// think the track has ended.
+		if pos+300_000 > length {
+			length = pos + 300_000
+		}
 		// Always report Playing — the car issued PlayControl=Play so we are playing.
 		// Reporting Paused causes the car to exit iPod mode and stop USB audio.
 		ipod.Respond(req, tr, &ReturnPlayStatus{
@@ -140,6 +154,12 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *PlayCurrentSelection:
 		ipod.Respond(req, tr, ackSuccess(req))
+		// Notify car that track index 0 is now the current track.
+		// This prompts the car to query title/artist/album for display.
+		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
+			EventID:    0x01,
+			TrackIndex: 0,
+		})
 	case *PlayControl:
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify the car that playback is now active
