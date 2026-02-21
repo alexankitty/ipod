@@ -95,18 +95,16 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 			String:              name,
 		})
 	case *GetPlayStatus:
-		length, pos, playing := uint32(300_000), uint32(0), true
+		length, pos := uint32(300_000), uint32(0)
 		if dev != nil {
-			length, pos, playing = dev.PlaybackStatus()
+			length, pos, _ = dev.PlaybackStatus()
 		}
-		state := PlayerStatePlaying
-		if !playing {
-			state = PlayerStatePaused
-		}
+		// Always report Playing — the car issued PlayControl=Play so we are playing.
+		// Reporting Paused causes the car to exit iPod mode and stop USB audio.
 		ipod.Respond(req, tr, &ReturnPlayStatus{
 			TrackLength:   length,
 			TrackPosition: pos,
-			State:         state,
+			State:         PlayerStatePlaying,
 		})
 	case *GetCurrentPlayingTrackIndex:
 		ipod.Respond(req, tr, &ReturnCurrentPlayingTrackIndex{

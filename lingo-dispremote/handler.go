@@ -8,6 +8,8 @@ import (
 )
 
 type DeviceDispRemote interface {
+	// TrackPositionMs returns the current track position in milliseconds.
+	TrackPositionMs() uint32
 }
 
 func ackSuccess(req *ipod.Command) *ACK {
@@ -48,7 +50,11 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 
 		switch msg.InfoType {
 		case InfoTypeTrackPositionMs:
-			t.InfoData = &InfoTrackPositionMs{TrackPositionMs: 0}
+			var pos uint32
+			if dev != nil {
+				pos = dev.TrackPositionMs()
+			}
+			t.InfoData = &InfoTrackPositionMs{TrackPositionMs: pos}
 		case InfoTypeTrackIndex:
 			t.InfoData = &InfoTrackIndex{TrackIndex: 1}
 		case InfoTypeChapterIndex:

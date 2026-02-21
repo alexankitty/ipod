@@ -389,7 +389,7 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 
 var devGeneral = &DevGeneral{}
 
-var avrcpSource extremote.DeviceExtRemote
+var avrcpSource *avrcp.Source
 
 func initAVRCP() {
 	src, err := avrcp.NewSource()
@@ -410,9 +410,17 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 		//todo
 		log.Warn("Lingo SimpleRemote is not supported yet")
 	case ipod.LingoDisplayRemoteID:
-		dispremote.HandleDispRemote(cmd, cmdWriter, nil)
+		var dispDev dispremote.DeviceDispRemote
+		if avrcpSource != nil {
+			dispDev = avrcpSource
+		}
+		dispremote.HandleDispRemote(cmd, cmdWriter, dispDev)
 	case ipod.LingoExtRemoteID:
-		extremote.HandleExtRemote(cmd, cmdWriter, avrcpSource)
+		var extDev extremote.DeviceExtRemote
+		if avrcpSource != nil {
+			extDev = avrcpSource
+		}
+		extremote.HandleExtRemote(cmd, cmdWriter, extDev)
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, nil)
 	}
