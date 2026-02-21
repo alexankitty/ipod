@@ -150,8 +150,26 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		})
 	case *SetPlayStatusChangeNotification:
 		ipod.Respond(req, tr, ackSuccess(req))
+		// Immediately push current state so the car skips the DB browse and
+		// goes straight to PlayCurrentSelection — matching real iPod behaviour.
+		ipod.Send(tr, &PlayStatusChangeNotification{
+			EventID:     0x00, // PlayStatusChanged
+			PlayerState: byte(PlayerStatePlaying),
+		})
+		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
+			EventID:    0x01,
+			TrackIndex: 0,
+		})
 	case *SetPlayStatusChangeNotificationShort:
 		ipod.Respond(req, tr, ackSuccess(req))
+		ipod.Send(tr, &PlayStatusChangeNotification{
+			EventID:     0x00,
+			PlayerState: byte(PlayerStatePlaying),
+		})
+		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
+			EventID:    0x01,
+			TrackIndex: 0,
+		})
 	case *PlayCurrentSelection:
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify car that track index 0 is now the current track.
