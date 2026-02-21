@@ -17,11 +17,36 @@ func ackSuccess(req *ipod.Command) *ACK {
 	return &ACK{Status: ACKStatusSuccess, CmdID: req.ID.CmdID()}
 }
 
-// func ackPending(req ipod.Packet, maxWait uint32) ACKPending {
-// 	return ACKPending{Status: ACKStatusPending, CmdID: uint8(req.ID.CmdID()), MaxWait: maxWait}
-// }
+// ExtRemoteHandler manages session-scoped state for lingo 0x04 (Extended Remote).
+// A new instance must be created for each USB session so that playing state
+// resets correctly on reconnect.
+type ExtRemoteHandler struct {
+	// playing is false until the first PlayControl is received.  Keeping it
+	// false initially means GetPlayStatus returns Paused, which causes the car
+	// to treat the first Toggle as "start playing" → single PlayControl cycle
+	// → PlayCurrentSelection arrives well within the car's 3.716-second
+	// audio-open window.
+	playing bool
+}
 
+// NewExtRemoteHandler returns a handler with playing=false (paused initial state).
+func NewExtRemoteHandler() *ExtRemoteHandler { return &ExtRemoteHandler{} }
+
+func (h *ExtRemoteHandler) playerState() PlayerState {
+	if h.playing {
+		return PlayerStatePlaying
+	}
+	return PlayerStatePaused
+}
+
+// HandleExtRemote is kept for callers that don't need session state.
+// Prefer ExtRemoteHandler.Handle for new code.
 func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemote) error {
+	h := ExtRemoteHandler{playing: true} // legacy: assume playing
+	return h.Handle(req, tr, dev)
+}
+
+func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemote) error {
 	//log.Printf("Req: %#v", req)
 	switch msg := req.Payload.(type) {
 
@@ -113,12 +138,10 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		if pos+300_000 > length {
 			length = pos + 300_000
 		}
-		// Always report Playing — the car issued PlayControl=Play so we are playing.
-		// Reporting Paused causes the car to exit iPod mode and stop USB audio.
 		ipod.Respond(req, tr, &ReturnPlayStatus{
 			TrackLength:   length,
 			TrackPosition: pos,
-			State:         PlayerStatePlaying,
+			State:         h.playerState(),
 		})
 	case *GetCurrentPlayingTrackIndex:
 		ipod.Respond(req, tr, &ReturnCurrentPlayingTrackIndex{
@@ -150,11 +173,16 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		})
 	case *SetPlayStatusChangeNotification:
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Immediately push current state so the car skips the DB browse and
-		// goes straight to PlayCurrentSelection — matching real iPod behaviour.
+		// Push Paused + TrackIndex(0) so the car knows a track exists but is
+		// paused. PlayControl(Toggle) then means "start playing" and the car
+		// follows immediately with PlayCurrentSelection in a single toggle
+		// cycle — no 2-second debounce gap.
+		// (Pushing Playing caused the car to Toggle→Pause first, then wait 2s
+		// before Toggle→Play, causing PlayCurrentSelection to miss the 3.716s
+		// audio-open deadline.)
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00, // PlayStatusChanged
-			PlayerState: byte(PlayerStatePlaying),
+			PlayerState: byte(PlayerStatePaused),
 		})
 		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
 			EventID:    0x01,
@@ -164,13 +192,14 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		ipod.Respond(req, tr, ackSuccess(req))
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00,
-			PlayerState: byte(PlayerStatePlaying),
+			PlayerState: byte(PlayerStatePaused),
 		})
 		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
 			EventID:    0x01,
 			TrackIndex: 0,
 		})
 	case *PlayCurrentSelection:
+		h.playing = true
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify car that track index 0 is now the current track.
 		// This prompts the car to query title/artist/album for display.
@@ -179,6 +208,7 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 			TrackIndex: 0,
 		})
 	case *PlayControl:
+		h.playing = true
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify the car that playback is now active
 		ipod.Send(tr, &PlayStatusChangeNotification{

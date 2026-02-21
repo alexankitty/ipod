@@ -333,6 +333,9 @@ func logCmd(cmd *ipod.Command, err error, msg string) {
 }
 
 func processFrames(frameTransport ipod.FrameReadWriter) {
+	// Reset session-scoped state so reconnections start fresh.
+	extRemoteHandler = extremote.NewExtRemoteHandler()
+
 	serde := ipod.CommandSerde{}
 
 	for {
@@ -391,6 +394,10 @@ var devGeneral = &DevGeneral{}
 
 var avrcpSource *avrcp.Source
 
+// extRemoteHandler is reset for every new USB session in processFrames so that
+// the playing-state flag starts as false (paused) on each reconnect.
+var extRemoteHandler = extremote.NewExtRemoteHandler()
+
 func initAVRCP() {
 	src, err := avrcp.NewSource()
 	if err != nil {
@@ -420,7 +427,7 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 		if avrcpSource != nil {
 			extDev = avrcpSource
 		}
-		extremote.HandleExtRemote(cmd, cmdWriter, extDev)
+		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, nil)
 	}
