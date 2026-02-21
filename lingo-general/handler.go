@@ -2,9 +2,13 @@ package general
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/oandrew/ipod"
+	"github.com/sirupsen/logrus"
 )
+
+var log = logrus.StandardLogger()
 
 type DeviceGeneral interface {
 	UIMode() UIMode
@@ -151,31 +155,53 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 	// We receive the car's authentication certificate in response to our GetDevAuthenticationInfo request
 	case *RetDevAuthenticationInfo:
+		log.WithFields(logrus.Fields{
+			"section":    fmt.Sprintf("%d/%d", msg.CertCurrentSection, msg.CertMaxSection),
+			"data_size":  len(msg.CertData),
+			"auth_major": msg.Major,
+			"auth_minor": msg.Minor,
+		}).Info("[AUTH] RetDevAuthenticationInfo received")
+
 		if msg.Major >= 2 {
 			// Accumulate multi-section certificate
 			if msg.CertCurrentSection == 0 {
+				log.Info("[AUTH] Starting multi-section certificate accumulation")
 				devCertBuf.Reset()
 			}
 			devCertBuf.Write(msg.CertData)
+			log.WithField("total_size", devCertBuf.Len()).Debug("[AUTH] Certificate data accumulated")
 
 			if msg.CertCurrentSection < msg.CertMaxSection {
 				// More sections coming, just acknowledge
+				log.WithField("section", msg.CertCurrentSection).Info("[AUTH] Acknowledging intermediate certificate section")
 				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 			} else {
 				// All certificate sections received
+				log.WithField("total_cert_size", devCertBuf.Len()).Info("[AUTH] All certificate sections received, acknowledging final section")
 				// TODO: Validate certificate
 
 				// Acknowledge receipt of complete certificate
 				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+				log.Info("[AUTH] Waiting for car to send challenge (GetDevAuthenticationSignatureV2)")
 				// Car will now send us a challenge to sign via GetDevAuthenticationSignatureV2
 			}
 		} else {
+			log.WithFields(logrus.Fields{
+				"major": msg.Major,
+				"minor": msg.Minor,
+			}).Warn("[AUTH] Unsupported authentication version")
 			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 		}
 
 	// Car requests our (accessory's) authentication info
 	case *GetDevAuthenticationInfo:
+		log.Info("[AUTH] GetDevAuthenticationInfo received from car - car requesting device cert")
 		major, minor, certData := dev.GetDeviceAuthenticationInfo()
+		log.WithFields(logrus.Fields{
+			"major":     major,
+			"minor":     minor,
+			"cert_size": len(certData),
+		}).Info("[AUTH] Sending RetDevAuthenticationInfo to car")
 		// Send our certificate in response to car's request
 		ipod.Respond(req, tr, &RetDevAuthenticationInfo{
 			Major:              major,
@@ -187,25 +213,37 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 	// We receive car's response to our signature challenge (if we sent one)
 	case *RetDevAuthenticationSignature:
+		log.WithField("signature_size", len(msg.Signature)).Info("[AUTH] RetDevAuthenticationSignature received from car")
 		// Car has sent us its signature
 		// TODO: Validate signature against their certificate
+		log.Info("[AUTH] Acknowledging car's authentication signature")
 		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
 
 	// Car sends us a challenge to sign
 	case *GetDevAuthenticationSignatureV2:
+		log.WithField("challenge", fmt.Sprintf("%02x", msg.Challenge)).Info("[AUTH] GetDevAuthenticationSignatureV2 received - challenge from car")
 		// Store the challenge for signing
 		if genDev, ok := dev.(interface {
 			StoreAuthChallenge([20]byte)
 		}); ok {
 			genDev.StoreAuthChallenge(msg.Challenge)
+			log.Info("[AUTH] Challenge stored in device")
 		}
 		// TODO: Sign the challenge with device's private key and send RetDevAuthenticationSignature
 		// For now, respond with an empty signature
+		log.Warn("[AUTH] Sending empty signature (device lacks private key for real signing)")
 		ipod.Respond(req, tr, &RetDevAuthenticationSignature{
 			Signature: make([]byte, 0), // Empty signature - device needs real private key
 		})
-		// After signature is acknowledged, authentication is complete
+		log.Info("[AUTH] Waiting for car to acknowledge authentication status")
+		// Note: OnAuthenticationComplete() will be called when we receive AckDevAuthenticationStatus
+
+	// Car acknowledges our signature - authentication complete
+	case *AckDevAuthenticationStatus:
+		log.WithField("status", msg.Status).Info("[AUTH] AckDevAuthenticationStatus received - authentication complete!")
+		// Authentication is now complete
 		dev.OnAuthenticationComplete()
+		log.Info("[AUTH] OnAuthenticationComplete() called - initializing audio")
 
 	case *GetiPodAuthenticationInfo:
 		ipod.Respond(req, tr, &RetiPodAuthenticationInfo{
@@ -256,17 +294,23 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		}
 		ipod.Respond(req, tr, ackFIDTokenValues(msg))
 	case *EndIDPS:
+		log.WithField("status", msg.AccEndIDPSStatus).Info("[AUTH] EndIDPS received")
 		dev.EndIDPS(msg.AccEndIDPSStatus)
 		switch msg.AccEndIDPSStatus {
 		case AccEndIDPSStatusContinue:
+			log.Info("[AUTH] Responding with IDPSStatus OK")
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusOK})
 			// Initiate authentication by requesting accessory's auth info
+			log.Info("[AUTH] Initiating authentication - sending GetDevAuthenticationInfo to car")
 			ipod.Send(tr, &GetDevAuthenticationInfo{})
 		case AccEndIDPSStatusReset:
+			log.Info("[AUTH] EndIDPS Reset status")
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusTimeLimitNotExceeded})
 		case AccEndIDPSStatusAbandon:
+			log.Warn("[AUTH] EndIDPS Abandon status")
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusWillNotAccept})
 		case AccEndIDPSStatusNewLink:
+			log.Info("[AUTH] EndIDPS NewLink status")
 			//pass
 		}
 

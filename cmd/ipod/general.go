@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/sirupsen/logrus"
 
 	"github.com/oandrew/ipod"
 	audio "github.com/oandrew/ipod/lingo-audio"
@@ -141,8 +142,12 @@ func (d *DevGeneral) EndIDPS(status general.AccEndIDPSStatus) {
 }
 
 func (d *DevGeneral) OnAuthenticationComplete() {
+	log.WithField("module", "DevGeneral").Info("[AUTH] OnAuthenticationComplete() - authorization successful, starting audio")
 	if d.cmdWriter != nil {
 		audio.Start(d.cmdWriter)
+		log.Info("[AUDIO] Audio started")
+	} else {
+		log.Warn("[AUTH] No command writer available for audio startup")
 	}
 }
 
@@ -157,9 +162,15 @@ func (d *DevGeneral) GetStoredChallenge() [20]byte {
 
 func (d *DevGeneral) StoreAuthChallenge(challenge [20]byte) {
 	d.authChallenge = challenge
+	log.WithField("challenge", fmt.Sprintf("%02x", challenge[:])).Debug("[AUTH] Challenge stored in device")
 }
 
 func (d *DevGeneral) GetDeviceAuthenticationInfo() (major uint8, minor uint8, certData []byte) {
 	// Return empty certificate for now - device would need its own cert/key pair
+	log.WithFields(logrus.Fields{
+		"major":     uint8(2),
+		"minor":     uint8(0),
+		"cert_size": len([]byte{}),
+	}).Warn("[AUTH] GetDeviceAuthenticationInfo() - returning empty certificate (device needs real cert)")
 	return 2, 0, []byte{}
 }
