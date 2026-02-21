@@ -286,7 +286,23 @@ func (s *RetDevAuthenticationInfo) UnmarshalBinary(r []byte) error {
 	}
 
 	return nil
+}
 
+func (s *RetDevAuthenticationInfo) MarshalBinary() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte(s.Major)
+	buf.WriteByte(s.Minor)
+
+	if s.Major >= 0x02 {
+		buf.WriteByte(s.CertCurrentSection)
+		buf.WriteByte(s.CertMaxSection)
+	}
+
+	if len(s.CertData) > 0 {
+		buf.Write(s.CertData)
+	}
+
+	return buf.Bytes(), nil
 }
 
 type DevAuthInfoStatus uint8
