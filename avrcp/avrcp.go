@@ -72,6 +72,16 @@ func (s *Source) TrackAlbum() string { return s.snapshot().Album }
 // TrackPositionMs implements dispremote.DeviceDispRemote.
 func (s *Source) TrackPositionMs() uint32 { return s.snapshot().Position }
 
+// TrackLengthMs implements dispremote.DeviceDispRemote.
+func (s *Source) TrackLengthMs() uint32 {
+	st := s.snapshot()
+	dur := st.Duration
+	if dur == 0 {
+		dur = 300_000
+	}
+	return dur
+}
+
 func (s *Source) snapshot() PlayState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

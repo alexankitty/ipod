@@ -10,6 +10,10 @@ import (
 type DeviceDispRemote interface {
 	// TrackPositionMs returns the current track position in milliseconds.
 	TrackPositionMs() uint32
+	// TrackLengthMs returns the track/stream duration in milliseconds.
+	TrackLengthMs() uint32
+	// TrackTitle returns the current track title.
+	TrackTitle() string
 }
 
 func ackSuccess(req *ipod.Command) *ACK {
@@ -112,8 +116,21 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 		ipod.Respond(req, tr, ackSuccess(req))
 
 	case *GetPlayStatus:
+		pos := uint32(0)
+		totalMs := uint32(300_000)
+		if dev != nil {
+			pos = dev.TrackPositionMs()
+			l := dev.TrackLengthMs()
+			if pos+300_000 > l {
+				l = pos + 300_000
+			}
+			totalMs = l
+		}
 		ipod.Respond(req, tr, &RetPlayStatus{
-			PlayState: 0, //stopped
+			PlayState:   byte(PlayStatusPlaying),
+			TrackIndex:  0,
+			TrackLength: totalMs,
+			TrackPos:    pos,
 		})
 
 	case *SetCurrentPlayingTrack:
@@ -125,10 +142,19 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 
 		switch msg.InfoType {
 		case TrackInfoTypeCaps:
+			totalMs := uint32(300_000)
+			if dev != nil {
+				p := dev.TrackPositionMs()
+				l := dev.TrackLengthMs()
+				if p+300_000 > l {
+					l = p + 300_000
+				}
+				totalMs = l
+			}
 			t.InfoData = &TrackInfoCaps{
 				Caps:         0x00,
-				TrackTotalMs: 300000,
-				ChapterCount: 0,
+				TrackTotalMs: totalMs,
+				ChapterCount: 1,
 			}
 		case TrackInfoTypeChapterTimeName:
 			t.InfoData = &TrackInfoChapterTimeName{
@@ -148,8 +174,12 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 				Name: ipod.StringToBytes(""),
 			}
 		case TrackInfoTypeTrack:
+			title := "Bluetooth"
+			if dev != nil {
+				title = dev.TrackTitle()
+			}
 			t.InfoData = &TrackInfoTrack{
-				Title: ipod.StringToBytes("track"),
+				Title: ipod.StringToBytes(title),
 			}
 		case TrackInfoTypeComposer:
 			t.InfoData = &TrackInfoComposer{
@@ -172,7 +202,7 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 		ipod.Respond(req, tr, t)
 	case *GetNumPlayingTracks:
 		ipod.Respond(req, tr, &RetNumPlayingTracks{
-			NumPlayTracks: 0,
+			NumPlayTracks: 1,
 		})
 	case *GetArtworkFormats:
 		ipod.Respond(req, tr, &RetArtworkFormats{})
