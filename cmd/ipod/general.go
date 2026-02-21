@@ -188,7 +188,7 @@ func (d *DevGeneral) GetDeviceAuthenticationInfo() (major uint8, minor uint8, ce
 		log.WithError(err).Warn("[AUTH] Failed to decode device certificate")
 		return 2, 0, nil
 	}
-	
+
 	log.WithFields(logrus.Fields{
 		"major":     uint8(2),
 		"minor":     uint8(0),

@@ -183,19 +183,27 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 				// Acknowledge receipt of complete certificate
 				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 
-				// Proactively send device's certificate now that car's is received
-				// (car may be waiting for this before sending challenge)
-				log.Info("[AUTH] Sending device certificate to car")
-				major, minor, certData := dev.GetDeviceAuthenticationInfo()
-				ipod.Send(tr, &RetDevAuthenticationInfo{
-					Major:              major,
-					Minor:              minor,
-					CertCurrentSection: 0,
-					CertMaxSection:     0,
-					CertData:           certData,
+				// Now WE send a challenge to the car to sign
+				// Generate a 20-byte random challenge
+				var challenge [20]byte
+
+				// Try to use device's challenge generation if available
+				if genDev, ok := dev.(interface {
+					GenerateAuthChallenge() [20]byte
+				}); ok {
+					challenge = genDev.GenerateAuthChallenge()
+				} else {
+					// Fallback to zero challenge if method not available
+					log.Warn("[AUTH] Device doesn't support GenerateAuthChallenge, using zero challenge")
+				}
+
+				log.WithField("challenge", fmt.Sprintf("%02x", challenge[:])).Info("[AUTH] Generated challenge, sending GetDevAuthenticationSignature to car")
+
+				ipod.Send(tr, &GetDevAuthenticationSignatureV2{
+					Challenge: challenge,
 				})
-				log.Info("[AUTH] Waiting for car to send challenge (GetDevAuthenticationSignatureV2)")
-				// Car will now send us a challenge to sign via GetDevAuthenticationSignatureV2
+				log.Info("[AUTH] Waiting for car to sign challenge (RetDevAuthenticationSignature)...")
+				// Car will respond with RetDevAuthenticationSignature containing its signature
 			}
 		} else {
 			log.WithFields(logrus.Fields{
@@ -231,24 +239,15 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		log.Info("[AUTH] Acknowledging car's authentication signature")
 		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
 
-	// Car sends us a challenge to sign
+	// Car sends us a challenge to sign (UNEXPECTED - we send the challenge, not receive it)
 	case *GetDevAuthenticationSignatureV2:
-		log.WithField("challenge", fmt.Sprintf("%02x", msg.Challenge)).Info("[AUTH] GetDevAuthenticationSignatureV2 received - challenge from car")
-		// Store the challenge for signing
-		if genDev, ok := dev.(interface {
-			StoreAuthChallenge([20]byte)
-		}); ok {
-			genDev.StoreAuthChallenge(msg.Challenge)
-			log.Info("[AUTH] Challenge stored in device")
-		}
-		// TODO: Sign the challenge with device's private key and send RetDevAuthenticationSignature
-		// For now, respond with an empty signature
-		log.Warn("[AUTH] Sending empty signature (device lacks private key for real signing)")
+		log.WithField("challenge", fmt.Sprintf("%02x", msg.Challenge)).Warn("[AUTH] GetDevAuthenticationSignatureV2 received from car (unexpected)")
+		// In normal flow, WE send this to the car, we don't receive it
+		// But if car sends this, just respond with empty signature
+		log.Warn("[AUTH] Sending empty signature in response")
 		ipod.Respond(req, tr, &RetDevAuthenticationSignature{
-			Signature: make([]byte, 0), // Empty signature - device needs real private key
+			Signature: make([]byte, 0), // Empty signature - device lacks private key
 		})
-		log.Info("[AUTH] Waiting for car to acknowledge authentication status")
-		// Note: OnAuthenticationComplete() will be called when we receive AckDevAuthenticationStatus
 
 	// Car acknowledges our signature - authentication complete
 	case *AckDevAuthenticationStatus:
