@@ -14,6 +14,10 @@ type DeviceDispRemote interface {
 	TrackLengthMs() uint32
 	// TrackTitle returns the current track title.
 	TrackTitle() string
+	// TrackArtist returns the current track artist.
+	TrackArtist() string
+	// TrackAlbum returns the current track album.
+	TrackAlbum() string
 }
 
 func ackSuccess(req *ipod.Command) *ACK {
@@ -60,7 +64,7 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 			}
 			t.InfoData = &InfoTrackPositionMs{TrackPositionMs: pos}
 		case InfoTypeTrackIndex:
-			t.InfoData = &InfoTrackIndex{TrackIndex: 1}
+			t.InfoData = &InfoTrackIndex{TrackIndex: 0}
 		case InfoTypeChapterIndex:
 			t.InfoData = &InfoChapterIndex{
 				TrackIndex:   0,
@@ -162,12 +166,20 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 				ChapterName: ipod.StringToBytes(""),
 			}
 		case TrackInfoTypeArtist:
+			artist := ""
+			if dev != nil {
+				artist = dev.TrackArtist()
+			}
 			t.InfoData = &TrackInfoArtist{
-				Name: ipod.StringToBytes(""),
+				Name: ipod.StringToBytes(artist),
 			}
 		case TrackInfoTypeAlbum:
+			album := ""
+			if dev != nil {
+				album = dev.TrackAlbum()
+			}
 			t.InfoData = &TrackInfoAlbum{
-				Name: ipod.StringToBytes(""),
+				Name: ipod.StringToBytes(album),
 			}
 		case TrackInfoTypeGenre:
 			t.InfoData = &TrackInfoGenre{
