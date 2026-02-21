@@ -167,6 +167,14 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 			EventID:     0x00, // PlayStatusChanged
 			PlayerState: byte(PlayerStatePlaying),
 		})
+		// Also notify TrackIndexChanged so the car immediately issues
+		// PlayCurrentSelection instead of waiting out its internal timer.
+		// On a real iPod, after pressing Play the iPod proactively sends
+		// this to indicate which track started.
+		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
+			EventID:    0x01,
+			TrackIndex: 0,
+		})
 	case *GetTrackArtworkTimes:
 		ipod.Respond(req, tr, &RetTrackArtworkTimes{})
 	case *GetShuffle:
