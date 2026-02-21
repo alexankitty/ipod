@@ -83,12 +83,17 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 			RecordCount: 1,
 		})
 	case *RetrieveCategorizedDatabaseRecords:
-		ipod.Respond(req, tr, &ReturnCategorizedDatabaseRecord{})
+		var name [16]byte
+		copy(name[:], "Radio UK")
+		ipod.Respond(req, tr, &ReturnCategorizedDatabaseRecord{
+			RecordCategoryIndex: 0,
+			String:              name,
+		})
 	case *GetPlayStatus:
 		ipod.Respond(req, tr, &ReturnPlayStatus{
 			TrackLength:   300 * 1000,
 			TrackPosition: 20 * 1000,
-			State:         PlayerStatePaused,
+			State:         PlayerStatePlaying,
 		})
 	case *GetCurrentPlayingTrackIndex:
 		ipod.Respond(req, tr, &ReturnCurrentPlayingTrackIndex{
@@ -139,7 +144,11 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 			NumTracks: 1,
 		})
 	case *SetCurrentPlayingTrack:
+		ipod.Respond(req, tr, ackSuccess(req))
 	case *SelectSortDBRecord:
+		ipod.Respond(req, tr, ackSuccess(req))
+		// Notify the car that the track selection changed so it proceeds to playback
+		ipod.Send(tr, &PlayStatusChangeNotification{Status: 0x01})
 	case *GetColorDisplayImageLimits:
 		ipod.Respond(req, tr, &ReturnColorDisplayImageLimits{
 			MaxWidth:    640,
