@@ -145,6 +145,20 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 			ipod.Respond(req, tr, ackSuccess(req))
 		}
 
+	// We receive the car's authentication certificate in response to our GetDevAuthenticationInfo request
+	case *RetDevAuthenticationInfo:
+		// The car has sent us its certificate
+		// We would accumulate it if it's multi-section, but for now just store/process it
+		if msg.Major >= 2 {
+			// TODO: Validate and store car's certificate
+			// For now, just acknowledge it
+			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+			// After getting their cert, we can send them a challenge to sign
+			// TODO: Generate challenge and send GetDevAuthenticationSignatureV2
+		} else {
+			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+		}
+
 	// Car requests our (accessory's) authentication info
 	case *GetDevAuthenticationInfo:
 		major, minor, certData := dev.GetDeviceAuthenticationInfo()
@@ -156,6 +170,12 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 			CertMaxSection:     0,
 			CertData:           certData,
 		})
+
+	// We receive car's response to our signature challenge (if we sent one)
+	case *RetDevAuthenticationSignature:
+		// Car has sent us its signature
+		// TODO: Validate signature against their certificate
+		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
 
 	// Car sends us a challenge to sign
 	case *GetDevAuthenticationSignatureV2:
@@ -226,7 +246,8 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		switch msg.AccEndIDPSStatus {
 		case AccEndIDPSStatusContinue:
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusOK})
-			// Car will send GetDevAuthenticationInfo when ready for authentication
+			// Initiate authentication by requesting accessory's auth info
+			ipod.Send(tr, &GetDevAuthenticationInfo{})
 		case AccEndIDPSStatusReset:
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusTimeLimitNotExceeded})
 		case AccEndIDPSStatusAbandon:
