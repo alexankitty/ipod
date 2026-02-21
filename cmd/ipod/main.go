@@ -13,6 +13,7 @@ import (
 	"github.com/urfave/cli"
 
 	"github.com/oandrew/ipod"
+	"github.com/oandrew/ipod/avrcp"
 	"github.com/oandrew/ipod/hid"
 	audio "github.com/oandrew/ipod/lingo-audio"
 	dispremote "github.com/oandrew/ipod/lingo-dispremote"
@@ -132,6 +133,8 @@ func main() {
 				},
 			},
 			Action: func(c *cli.Context) error {
+				initAVRCP()
+
 				path := c.Args().First()
 				if path == "" {
 					return UsageError{fmt.Errorf("device path is missing")}
@@ -386,6 +389,18 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 
 var devGeneral = &DevGeneral{}
 
+var avrcpSource extremote.DeviceExtRemote
+
+func initAVRCP() {
+	src, err := avrcp.NewSource()
+	if err != nil {
+		log.WithError(err).Warn("[AVRCP] Could not connect to D-Bus, playback metadata will be static")
+		return
+	}
+	log.Info("[AVRCP] D-Bus source started")
+	avrcpSource = src
+}
+
 func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 	switch cmd.ID.LingoID() {
 	case ipod.LingoGeneralID:
@@ -397,7 +412,7 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 	case ipod.LingoDisplayRemoteID:
 		dispremote.HandleDispRemote(cmd, cmdWriter, nil)
 	case ipod.LingoExtRemoteID:
-		extremote.HandleExtRemote(cmd, cmdWriter, nil)
+		extremote.HandleExtRemote(cmd, cmdWriter, avrcpSource)
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, nil)
 	}
