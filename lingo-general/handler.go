@@ -1,6 +1,8 @@
 package general
 
 import (
+	"bytes"
+
 	"github.com/oandrew/ipod"
 )
 
@@ -88,6 +90,8 @@ func ackFIDTokenValues(tokens *SetFIDTokenValues) *RetFIDTokenValueACKs {
 	}
 }
 
+var devCertBuf bytes.Buffer
+
 func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) error {
 	switch msg := req.Payload.(type) {
 	case *RequestRemoteUIMode:
@@ -147,14 +151,24 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 	// We receive the car's authentication certificate in response to our GetDevAuthenticationInfo request
 	case *RetDevAuthenticationInfo:
-		// The car has sent us its certificate
-		// We would accumulate it if it's multi-section, but for now just store/process it
 		if msg.Major >= 2 {
-			// TODO: Validate and store car's certificate
-			// For now, just acknowledge it
-			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
-			// After getting their cert, we can send them a challenge to sign
-			// TODO: Generate challenge and send GetDevAuthenticationSignatureV2
+			// Accumulate multi-section certificate
+			if msg.CertCurrentSection == 0 {
+				devCertBuf.Reset()
+			}
+			devCertBuf.Write(msg.CertData)
+
+			if msg.CertCurrentSection < msg.CertMaxSection {
+				// More sections coming, just acknowledge
+				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+			} else {
+				// All certificate sections received
+				// TODO: Validate certificate
+
+				// Acknowledge receipt of complete certificate
+				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+				// Car will now send us a challenge to sign via GetDevAuthenticationSignatureV2
+			}
 		} else {
 			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 		}
