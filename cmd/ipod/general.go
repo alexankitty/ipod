@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/davecgh/go-spew/spew"
@@ -12,6 +13,21 @@ import (
 	audio "github.com/oandrew/ipod/lingo-audio"
 	general "github.com/oandrew/ipod/lingo-general"
 )
+
+// Test device certificate (self-signed, for authentication testing)
+const deviceCertBase64 = `
+MIICXDCCAcWgAwIBAgIUH8O7wJbzGO4gPEXNv/Rc+lrC6q0wDQYJKoZIhvcNAQELBQAwQDELMAkG
+A1UEBhMCVVMxDTALBgNVBAoMBFRlc3QxDTALBgNVBAsMBFRlc3QxEzARBgNVBAMMClRlc3REZXZp
+Y2UwHhcNMjYwMjIxMTAyODEwWhcNMzYwMjE5MTAyODEwWjBAMQswCQYDVQQGEwJVUzENMAsGA1UE
+CgwEVGVzdDENMAsGA1UECwwEVGVzdDETMBEGA1UEAwwKVGVzdERldmljZTCBnzANBgkqhkiG9w0B
+AQEFAAOBjQAwgYkCgYEA6VPZQshKBig2C8qBxyaPoyX9KXYbVArdEUjY12Vr2J3RWiQoi5x44efZ
+Y6fh5bGGKmXNhbrw6zjNAKNfbdq/GO+o5zZG7D656MTCk7UsTYxS97JcuIne3UKZAndIrXGFVuiV
+HMDV/fxmtJcxRPW72ICCfJEcSuhVKjC+UxSfE18CAwEAAaNTMFEwHQYDVR0OBBYEFIB19OIAg3GK
+srUdy0929KVbKv75MB8GA1UdIwQYMBaAFIB19OIAg3GKsrUdy0929KVbKv75MA8GA1UdEwEB/wQF
+MAMBAf8wDQYJKoZIhvcNAQELBQADgYEAR0LO5dgv97R+1l01EmUCsGnXq+5GE4+8uK+77TBNDM8q
++QqSm+VflcqiC0Jz6mhLk46JEOOlvAAJWISI4AEGff5AoSgMtgJtrxNqSvIkXxTw8cgp/yICMjOy
+HOAqPvXfMDvmtRwwRdeLvFcfo6cXa7cFi9gMdmhQs7N7w2hQB5o=
+`
 
 type DevGeneral struct {
 	uimode        general.UIMode
@@ -166,11 +182,17 @@ func (d *DevGeneral) StoreAuthChallenge(challenge [20]byte) {
 }
 
 func (d *DevGeneral) GetDeviceAuthenticationInfo() (major uint8, minor uint8, certData []byte) {
-	// Return empty certificate for now - device would need its own cert/key pair
+	// Decode test device certificate
+	decodedCert, err := base64.StdEncoding.DecodeString(deviceCertBase64)
+	if err != nil {
+		log.WithError(err).Warn("[AUTH] Failed to decode device certificate")
+		return 2, 0, nil
+	}
+	
 	log.WithFields(logrus.Fields{
 		"major":     uint8(2),
 		"minor":     uint8(0),
-		"cert_size": len([]byte{}),
-	}).Warn("[AUTH] GetDeviceAuthenticationInfo() - returning empty certificate (device needs real cert)")
-	return 2, 0, []byte{}
+		"cert_size": len(decodedCert),
+	}).Infof("[AUTH] Returning device certificate (test certificate, %d bytes)", len(decodedCert))
+	return 2, 0, decodedCert
 }
