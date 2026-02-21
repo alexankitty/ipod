@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -84,6 +84,19 @@ func (s *Source) TrackLengthMs() uint32 {
 		dur = 300_000
 	}
 	return dur
+}
+
+// MediaControl calls a BlueZ MediaPlayer1 method on the phone to control
+// playback via AVRCP. method is one of: Play, Pause, Stop, Next, Previous,
+// FastForward, Rewind, Release.
+func (s *Source) MediaControl(method string) {
+	path := findPlayerPath()
+	if path == "" {
+		return
+	}
+	exec.Command("busctl", "--system", "call",
+		"org.bluez", path,
+		"org.bluez.MediaPlayer1", method).Run()
 }
 
 func (s *Source) snapshot() PlayState {
@@ -209,7 +222,7 @@ func (s *Source) logOnce(msg string) {
 	if s.lastTrackLog != msg {
 		s.lastTrackLog = msg
 		s.mu.Unlock()
-		log.Print(msg)
+		fmt.Fprintln(os.Stderr, msg)
 	} else {
 		s.mu.Unlock()
 	}

@@ -11,6 +11,10 @@ type DeviceExtRemote interface {
 	TrackTitle() string
 	TrackArtist() string
 	TrackAlbum() string
+	// MediaControl sends a playback command to the phone via AVRCP.
+	// method is a BlueZ MediaPlayer1 method name: "Play", "Pause",
+	// "Next", "Previous", "FastForward", "Rewind".
+	MediaControl(method string)
 }
 
 func ackSuccess(req *ipod.Command) *ACK {
@@ -209,14 +213,38 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		})
 	case *PlayControl:
 		wasPlaying := h.playing
+		// Determine the BlueZ MediaPlayer1 method to call on the phone.
+		var avrcpCmd string
 		switch msg.Cmd {
 		case PlayControlToggle:
 			h.playing = !wasPlaying
+			if h.playing {
+				avrcpCmd = "Play"
+			} else {
+				avrcpCmd = "Pause"
+			}
 		case PlayControlPlay:
 			h.playing = true
-		case PlayControlPause, PlayControlStop:
+			avrcpCmd = "Play"
+		case PlayControlPause:
 			h.playing = false
-		// FF, Rew, Next, Prev, etc. leave playing state unchanged
+			avrcpCmd = "Pause"
+		case PlayControlStop:
+			h.playing = false
+			avrcpCmd = "Pause"
+		case PlayControlNextTrack, PlayControlNext, PlayControlNextChapter:
+			avrcpCmd = "Next"
+		case PlayControlPrevTrack, PlayControlPrev, PlayControlPrevChapter:
+			avrcpCmd = "Previous"
+		case PlayControlStartFF:
+			avrcpCmd = "FastForward"
+		case PlayControlStartRew:
+			avrcpCmd = "Rewind"
+		case PlayControlEndFFRew:
+			avrcpCmd = "Release"
+		}
+		if avrcpCmd != "" && dev != nil {
+			dev.MediaControl(avrcpCmd)
 		}
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Always notify the current state after a PlayControl.
