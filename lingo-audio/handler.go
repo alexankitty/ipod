@@ -27,10 +27,14 @@ func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) erro
 
 	case *RetAccSampleRateCaps:
 		// Car sends its supported sample rates
-		// Acknowledge receipt
+		// Acknowledge and send our track attributes
 		ipod.Respond(req, tr, &AccAck{
 			Status: ACKStatusSuccess,
 			CmdID:  0x03, // RetAccSampleRateCaps command ID
+		})
+		// Now send our audio attributes to indicate we're ready
+		ipod.Send(tr, &TrackNewAudioAttributes{
+			SampleRate: 44100,
 		})
 
 	case *TrackNewAudioAttributes:
