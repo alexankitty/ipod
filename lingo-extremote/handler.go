@@ -208,21 +208,32 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			TrackIndex: 0,
 		})
 	case *PlayControl:
-		h.playing = true
+		wasPlaying := h.playing
+		switch msg.Cmd {
+		case PlayControlToggle:
+			h.playing = !wasPlaying
+		case PlayControlPlay:
+			h.playing = true
+		case PlayControlPause, PlayControlStop:
+			h.playing = false
+		// FF, Rew, Next, Prev, etc. leave playing state unchanged
+		}
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Notify the car that playback is now active
+		// Always notify the current state after a PlayControl.
 		ipod.Send(tr, &PlayStatusChangeNotification{
-			EventID:     0x00, // PlayStatusChanged
-			PlayerState: byte(PlayerStatePlaying),
+			EventID:     0x00,
+			PlayerState: byte(h.playerState()),
 		})
-		// Also notify TrackIndexChanged so the car immediately issues
-		// PlayCurrentSelection instead of waiting out its internal timer.
-		// On a real iPod, after pressing Play the iPod proactively sends
-		// this to indicate which track started.
-		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
-			EventID:    0x01,
-			TrackIndex: 0,
-		})
+		// Send TrackIndexChanged only when transitioning TO playing.
+		// This prompts the car to issue PlayCurrentSelection (re-opens audio).
+		// Sending it on Pause/Toggle-off would confuse the car into thinking a
+		// new track started while it's trying to pause.
+		if h.playing && !wasPlaying {
+			ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
+				EventID:    0x01,
+				TrackIndex: 0,
+			})
+		}
 	case *GetTrackArtworkTimes:
 		ipod.Respond(req, tr, &RetTrackArtworkTimes{})
 	case *GetShuffle:
