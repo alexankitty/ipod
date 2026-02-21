@@ -352,7 +352,9 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		ipod.Respond(req, tr, ackSuccess(req))
 
 	case *SetAvailableCurrent:
-		// notify acc
+		// Car tells us the available current (power draw)
+		// Acknowledge it
+		ipod.Respond(req, tr, ackSuccess(req))
 
 	case *RequestApplicationLaunch:
 		ipod.Respond(req, tr, ack(req, ACKStatusFailed))
