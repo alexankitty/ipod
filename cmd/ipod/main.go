@@ -360,6 +360,7 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 		}
 
 		outCmdBuf := ipod.CmdBuffer{}
+		devGeneral.cmdWriter = &outCmdBuf
 		for i := range inCmdBuf.Commands {
 			//todo: check return error
 			handlePacket(&outCmdBuf, inCmdBuf.Commands[i])
@@ -388,11 +389,6 @@ var devGeneral = &DevGeneral{}
 func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 	switch cmd.ID.LingoID() {
 	case ipod.LingoGeneralID:
-		if auth, ok := cmd.Payload.(*general.RetDevAuthenticationInfo); ok {
-			if auth.Major >= 2 && auth.CertCurrentSection >= auth.CertMaxSection || auth.Major < 2 {
-				audio.Start(cmdWriter)
-			}
-		}
 		general.HandleGeneral(cmd, cmdWriter, devGeneral)
 
 	case ipod.LingoSimpleRemoteID:

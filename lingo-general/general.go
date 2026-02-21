@@ -248,6 +248,12 @@ type IdentifyDeviceLingoes struct {
 	DeviceID uint32
 }
 
+const (
+	IdentifyDeviceLingoesOptionsNoAuth        = 0x00
+	IdentifyDeviceLingoesOptionsDeferAuth     = 0x01
+	IdentifyDeviceLingoesOptionsImmediateAuth = 0x02
+)
+
 type GetDevAuthenticationInfo struct{}
 
 // type RetDevAuthenticationInfo struct {

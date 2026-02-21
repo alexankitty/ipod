@@ -2,19 +2,23 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 
 	"github.com/davecgh/go-spew/spew"
 
 	"github.com/oandrew/ipod"
+	audio "github.com/oandrew/ipod/lingo-audio"
 	general "github.com/oandrew/ipod/lingo-general"
 
 	"github.com/fullsailor/pkcs7"
 )
 
 type DevGeneral struct {
-	uimode general.UIMode
-	tokens []general.FIDTokenValue
+	uimode        general.UIMode
+	tokens        []general.FIDTokenValue
+	cmdWriter     ipod.CommandWriter
+	authChallenge [20]byte
 }
 
 var _ general.DeviceGeneral = &DevGeneral{}
@@ -149,4 +153,15 @@ func (d *DevGeneral) AccAuthCert(cert []byte) {
 		log.Infof("cert: CN=%s", cn)
 	}
 
+}
+
+func (d *DevGeneral) OnAuthenticationComplete() {
+	if d.cmdWriter != nil {
+		audio.Start(d.cmdWriter)
+	}
+}
+
+func (d *DevGeneral) GenerateAuthChallenge() [20]byte {
+	rand.Read(d.authChallenge[:])
+	return d.authChallenge
 }

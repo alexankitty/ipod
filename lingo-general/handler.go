@@ -23,6 +23,7 @@ type DeviceGeneral interface {
 	EndIDPS(status AccEndIDPSStatus)
 	SetToken(token FIDTokenValue) error
 	AccAuthCert(cert []byte)
+	OnAuthenticationComplete()
 
 	SetEventNotificationMask(mask uint64)
 	EventNotificationMask() uint64
@@ -134,10 +135,17 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 	case *RequestTransportMaxPayloadSize:
 		ipod.Respond(req, tr, &ReturnTransportMaxPayloadSize{MaxPayload: dev.MaxPayload()})
 	case *IdentifyDeviceLingoes:
-		ipod.Respond(req, tr, ackSuccess(req))
-		if msg.DeviceID != 0x00 {
-			//ipod.Send(tr, &GetDevAuthenticationInfo{})
-			ipod.Respond(req, tr, &GetDevAuthenticationInfo{})
+		// Check authentication options
+		switch msg.Options {
+		case IdentifyDeviceLingoesOptionsDeferAuth:
+			// DeferAuth is not supported
+			ipod.Respond(req, tr, ack(req, ACKStatusFailed))
+		case IdentifyDeviceLingoesOptionsImmediateAuth:
+			// Acknowledge and continue - authentication will start after IDPS
+			ipod.Respond(req, tr, ackSuccess(req))
+		default:
+			// NoAuth or unrecognized - proceed with normal flow
+			ipod.Respond(req, tr, ackSuccess(req))
 		}
 
 	//GetDevAuthenticationInfo
@@ -152,7 +160,12 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 			} else {
 				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 				dev.AccAuthCert(accCertBuf.Bytes())
-				ipod.Respond(req, tr, &GetDevAuthenticationSignatureV2{Counter: 0})
+				// Generate challenge for signature verification
+				sigCmd := &GetDevAuthenticationSignatureV2{Counter: 0}
+				if genDev, ok := dev.(interface{ GenerateAuthChallenge() [20]byte }); ok {
+					sigCmd.Challenge = genDev.GenerateAuthChallenge()
+				}
+				ipod.Respond(req, tr, sigCmd)
 			}
 		} else {
 			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
@@ -167,6 +180,7 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 	case *RetDevAuthenticationSignature:
 		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
+		dev.OnAuthenticationComplete()
 
 	case *GetiPodAuthenticationInfo:
 		ipod.Respond(req, tr, &RetiPodAuthenticationInfo{
