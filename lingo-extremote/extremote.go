@@ -30,6 +30,8 @@ var Lingos struct {
 	RetArtworkFormats                          `id:"0x000F"`
 	GetTrackArtworkData                        `id:"0x0010"`
 	RetTrackArtworkData                        `id:"0x0011"`
+	RequestiPodName                            `id:"0x0014"`
+	ReturniPodName                             `id:"0x0015"`
 	ResetDBSelection                           `id:"0x0016"`
 	SelectDBRecord                             `id:"0x0017"`
 	GetNumberCategorizedDBRecords              `id:"0x0018"`
@@ -249,7 +251,23 @@ type RetTrackArtworkData struct {
 	Data         []byte
 }
 
-//ack
+type RequestiPodName struct{}
+
+type ReturniPodName struct {
+	Name []byte
+}
+
+func (s ReturniPodName) MarshalBinary() ([]byte, error) {
+	return s.Name, nil
+}
+
+func (s *ReturniPodName) UnmarshalBinary(data []byte) error {
+	s.Name = make([]byte, len(data))
+	copy(s.Name, data)
+	return nil
+}
+
+// ack
 type ResetDBSelection struct {
 }
 
