@@ -239,6 +239,9 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		// TODO: Validate signature against their certificate
 		log.Info("[AUTH] Acknowledging car's authentication signature")
 		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
+		// Authentication complete - sending AckDevAuthenticationStatus completes the handshake
+		log.Info("[AUTH] Authentication complete - calling OnAuthenticationComplete()")
+		dev.OnAuthenticationComplete()
 
 	// Car sends us a challenge to sign (UNEXPECTED - we send the challenge, not receive it)
 	case *GetDevAuthenticationSignatureV2:
@@ -249,13 +252,6 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		ipod.Respond(req, tr, &RetDevAuthenticationSignature{
 			Signature: make([]byte, 0), // Empty signature - device lacks private key
 		})
-
-	// Car acknowledges our signature - authentication complete
-	case *AckDevAuthenticationStatus:
-		log.WithField("status", msg.Status).Info("[AUTH] AckDevAuthenticationStatus received - authentication complete!")
-		// Authentication is now complete
-		dev.OnAuthenticationComplete()
-		log.Info("[AUTH] OnAuthenticationComplete() called - initializing audio")
 
 	case *GetiPodAuthenticationInfo:
 		ipod.Respond(req, tr, &RetiPodAuthenticationInfo{
