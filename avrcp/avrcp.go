@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,8 +27,9 @@ type PlayState struct {
 
 // Source polls BlueZ via busctl for AVRCP MediaPlayer1 state.
 type Source struct {
-	mu    sync.RWMutex
-	state PlayState
+	mu          sync.RWMutex
+	state       PlayState
+	lastTrackLog string // dedup track log lines
 }
 
 func newPlayState() PlayState {
@@ -139,19 +142,37 @@ func getProperty(path, iface, prop string) *busctlVariant {
 	return &v
 }
 
+func (s *Source) logOnce(msg string) {
+	s.mu.Lock()
+	if s.lastTrackLog != msg {
+		s.lastTrackLog = msg
+		s.mu.Unlock()
+		log.Print(msg)
+	} else {
+		s.mu.Unlock()
+	}
+}
+
 func (s *Source) refresh() {
 	path := findPlayerPath()
 	if path == "" {
 		return
 	}
 
-	var next PlayState
+	// Start from the existing state so we never lose previously-cached
+	// metadata (Title/Artist/Album) on a poll cycle where Track is absent.
+	s.mu.RLock()
+	next := s.state
+	s.mu.RUnlock()
+
+	gotAny := false
 
 	// Position (uint32, milliseconds)
 	if v := getProperty(path, "org.bluez.MediaPlayer1", "Position"); v != nil {
 		var pos uint32
 		if json.Unmarshal(v.Data, &pos) == nil {
 			next.Position = pos
+			gotAny = true
 		}
 	}
 
@@ -160,6 +181,7 @@ func (s *Source) refresh() {
 		var status string
 		if json.Unmarshal(v.Data, &status) == nil {
 			next.Playing = status == "playing"
+			gotAny = true
 		}
 	}
 
@@ -169,23 +191,44 @@ func (s *Source) refresh() {
 		var track map[string]busctlVariant
 		if json.Unmarshal(v.Data, &track) == nil {
 			if t, ok := track["Title"]; ok {
-				json.Unmarshal(t.Data, &next.Title)
+				var title string
+				if json.Unmarshal(t.Data, &title) == nil && title != "" {
+					next.Title = title
+					gotAny = true
+				}
 			}
 			if a, ok := track["Artist"]; ok {
-				json.Unmarshal(a.Data, &next.Artist)
+				var artist string
+				if json.Unmarshal(a.Data, &artist) == nil {
+					next.Artist = artist
+					gotAny = true
+				}
 			}
 			if a, ok := track["Album"]; ok {
-				json.Unmarshal(a.Data, &next.Album)
+				var album string
+				if json.Unmarshal(a.Data, &album) == nil {
+					next.Album = album
+					gotAny = true
+				}
 			}
 			if d, ok := track["Duration"]; ok {
-				json.Unmarshal(d.Data, &next.Duration)
+				var dur uint32
+				if json.Unmarshal(d.Data, &dur) == nil && dur > 0 {
+					next.Duration = dur
+					gotAny = true
+				}
 			}
+			msg := fmt.Sprintf("[AVRCP] track: title=%q artist=%q album=%q duration=%d",
+				next.Title, next.Artist, next.Album, next.Duration)
+			s.logOnce(msg)
+		} else {
+			s.logOnce("[AVRCP] track: failed to parse Track JSON")
 		}
+	} else {
+		s.logOnce("[AVRCP] track property not available from " + path)
 	}
 
-	// Preserve Playing=true if AVRCP poll didn't return Status (e.g. no Track property)
-	if !next.Playing && next.Position == 0 {
-		// No useful data from this poll — keep existing state
+	if !gotAny {
 		return
 	}
 	s.mu.Lock()
