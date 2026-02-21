@@ -158,14 +158,16 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 			if msg.CertCurrentSection < msg.CertMaxSection {
 				ipod.Respond(req, tr, ackSuccess(req))
 			} else {
-				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
 				dev.AccAuthCert(accCertBuf.Bytes())
 				// Generate challenge for signature verification
-				sigCmd := &GetDevAuthenticationSignatureV2{Counter: 0}
+				var challenge [20]byte
 				if genDev, ok := dev.(interface{ GenerateAuthChallenge() [20]byte }); ok {
-					sigCmd.Challenge = genDev.GenerateAuthChallenge()
+					challenge = genDev.GenerateAuthChallenge()
 				}
-				ipod.Respond(req, tr, sigCmd)
+				// First respond with AckDevAuthenticationInfo
+				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+				// Then send the signature request (with new transaction)
+				ipod.Send(tr, &GetDevAuthenticationSignatureV2{Challenge: challenge, Counter: 0})
 			}
 		} else {
 			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})

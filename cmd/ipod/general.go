@@ -165,3 +165,7 @@ func (d *DevGeneral) GenerateAuthChallenge() [20]byte {
 	rand.Read(d.authChallenge[:])
 	return d.authChallenge
 }
+
+func (d *DevGeneral) GetStoredChallenge() [20]byte {
+	return d.authChallenge
+}
