@@ -140,10 +140,6 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *PlayCurrentSelection:
 		ipod.Respond(req, tr, ackSuccess(req))
-		ipod.Send(tr, &PlayStatusChangeNotification{
-			EventID:     0x00, // PlayStatusChanged
-			PlayerState: byte(PlayerStatePlaying),
-		})
 	case *PlayControl:
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify the car that playback is now active
