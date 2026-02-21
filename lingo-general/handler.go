@@ -1,8 +1,6 @@
 package general
 
 import (
-	"bytes"
-
 	"github.com/oandrew/ipod"
 )
 
@@ -22,8 +20,9 @@ type DeviceGeneral interface {
 	StartIDPS()
 	EndIDPS(status AccEndIDPSStatus)
 	SetToken(token FIDTokenValue) error
-	AccAuthCert(cert []byte)
 	OnAuthenticationComplete()
+	StoreAuthChallenge(challenge [20]byte)
+	GetDeviceAuthenticationInfo() (major uint8, minor uint8, certData []byte)
 
 	SetEventNotificationMask(mask uint64)
 	EventNotificationMask() uint64
@@ -89,8 +88,6 @@ func ackFIDTokenValues(tokens *SetFIDTokenValues) *RetFIDTokenValueACKs {
 	}
 }
 
-var accCertBuf bytes.Buffer
-
 func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) error {
 	switch msg := req.Payload.(type) {
 	case *RequestRemoteUIMode:
@@ -148,40 +145,32 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 			ipod.Respond(req, tr, ackSuccess(req))
 		}
 
-	//GetDevAuthenticationInfo
-	case *RetDevAuthenticationInfo:
-		if msg.Major >= 2 {
-			if msg.CertCurrentSection == 0 {
-				accCertBuf.Reset()
-			}
-			accCertBuf.Write(msg.CertData)
-			if msg.CertCurrentSection < msg.CertMaxSection {
-				ipod.Respond(req, tr, ackSuccess(req))
-			} else {
-				dev.AccAuthCert(accCertBuf.Bytes())
-				// Generate challenge for signature verification
-				var challenge [20]byte
-				if genDev, ok := dev.(interface{ GenerateAuthChallenge() [20]byte }); ok {
-					challenge = genDev.GenerateAuthChallenge()
-				}
-				// First respond with AckDevAuthenticationInfo
-				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
-				// Then send the signature request (with new transaction)
-				ipod.Send(tr, &GetDevAuthenticationSignatureV2{Challenge: challenge, Counter: 0})
-			}
-		} else {
-			ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+	// Car requests our (accessory's) authentication info
+	case *GetDevAuthenticationInfo:
+		major, minor, certData := dev.GetDeviceAuthenticationInfo()
+		// Send our certificate in response to car's request
+		ipod.Respond(req, tr, &RetDevAuthenticationInfo{
+			Major:              major,
+			Minor:              minor,
+			CertCurrentSection: 0,
+			CertMaxSection:     0,
+			CertData:           certData,
+		})
+
+	// Car sends us a challenge to sign
+	case *GetDevAuthenticationSignatureV2:
+		// Store the challenge for signing
+		if genDev, ok := dev.(interface {
+			StoreAuthChallenge([20]byte)
+		}); ok {
+			genDev.StoreAuthChallenge(msg.Challenge)
 		}
-
-	// GetDevAuthenticationSignatureV1
-	// case *RetDevAuthenticationSignatureV1:
-	// 	ipod.Respond(req, tr, ackDevAuthenticationStatus{Status: DevAuthStatusPassed})
-	// // GetDevAuthenticationSignatureV2
-	// case *RetDevAuthenticationSignatureV2:
-	// 	ipod.Respond(req, tr, ackDevAuthenticationStatus{Status: DevAuthStatusPassed})
-
-	case *RetDevAuthenticationSignature:
-		ipod.Respond(req, tr, &AckDevAuthenticationStatus{Status: DevAuthStatusPassed})
+		// TODO: Sign the challenge with device's private key and send RetDevAuthenticationSignature
+		// For now, respond with an empty signature
+		ipod.Respond(req, tr, &RetDevAuthenticationSignature{
+			Signature: make([]byte, 0), // Empty signature - device needs real private key
+		})
+		// After signature is acknowledged, authentication is complete
 		dev.OnAuthenticationComplete()
 
 	case *GetiPodAuthenticationInfo:
@@ -237,9 +226,7 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 		switch msg.AccEndIDPSStatus {
 		case AccEndIDPSStatusContinue:
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusOK})
-			ipod.Send(tr, &GetDevAuthenticationInfo{})
-
-			// get dev auth info
+			// Car will send GetDevAuthenticationInfo when ready for authentication
 		case AccEndIDPSStatusReset:
 			ipod.Respond(req, tr, &IDPSStatus{Status: IDPSStatusTimeLimitNotExceeded})
 		case AccEndIDPSStatusAbandon:

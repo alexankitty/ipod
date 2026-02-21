@@ -10,8 +10,6 @@ import (
 	"github.com/oandrew/ipod"
 	audio "github.com/oandrew/ipod/lingo-audio"
 	general "github.com/oandrew/ipod/lingo-general"
-
-	"github.com/fullsailor/pkcs7"
 )
 
 type DevGeneral struct {
@@ -142,19 +140,6 @@ func (d *DevGeneral) EndIDPS(status general.AccEndIDPSStatus) {
 	log.Print(buf.String())
 }
 
-func (d *DevGeneral) AccAuthCert(cert []byte) {
-	pkcs, err := pkcs7.Parse(cert)
-	if err != nil {
-		log.Error(err)
-		return
-	}
-	if len(pkcs.Certificates) >= 1 {
-		cn := pkcs.Certificates[0].Subject.CommonName
-		log.Infof("cert: CN=%s", cn)
-	}
-
-}
-
 func (d *DevGeneral) OnAuthenticationComplete() {
 	if d.cmdWriter != nil {
 		audio.Start(d.cmdWriter)
@@ -168,4 +153,13 @@ func (d *DevGeneral) GenerateAuthChallenge() [20]byte {
 
 func (d *DevGeneral) GetStoredChallenge() [20]byte {
 	return d.authChallenge
+}
+
+func (d *DevGeneral) StoreAuthChallenge(challenge [20]byte) {
+	d.authChallenge = challenge
+}
+
+func (d *DevGeneral) GetDeviceAuthenticationInfo() (major uint8, minor uint8, certData []byte) {
+	// Return empty certificate for now - device would need its own cert/key pair
+	return 2, 0, []byte{}
 }
