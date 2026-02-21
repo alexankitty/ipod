@@ -92,16 +92,16 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 	case *SelectDBRecord:
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *GetNumberCategorizedDBRecords:
+		// Return 0 for all categories so the car skips the DB browse loop
+		// and proceeds immediately to PlayCurrentSelection(-1). The 2+ second
+		// browse loop was causing PlayCurrentSelection to miss the car's 3.7s
+		// audio-open deadline and the USB audio interface was being closed.
 		ipod.Respond(req, tr, &ReturnNumberCategorizedDBRecords{
-			RecordCount: 1,
+			RecordCount: 0,
 		})
 	case *RetrieveCategorizedDatabaseRecords:
-		var name [16]byte
-		copy(name[:], "Radio UK")
-		ipod.Respond(req, tr, &ReturnCategorizedDatabaseRecord{
-			RecordCategoryIndex: 0,
-			String:              name,
-		})
+		// Shouldn't be reached when RecordCount=0, but respond gracefully.
+		ipod.Respond(req, tr, &ACK{Status: ACKStatusFailed, CmdID: req.ID.CmdID()})
 	case *GetPlayStatus:
 		length, pos := uint32(300_000), uint32(0)
 		if dev != nil {
