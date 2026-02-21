@@ -182,6 +182,18 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 				// Acknowledge receipt of complete certificate
 				ipod.Respond(req, tr, &AckDevAuthenticationInfo{Status: DevAuthInfoStatusSupported})
+
+				// Proactively send device's certificate now that car's is received
+				// (car may be waiting for this before sending challenge)
+				log.Info("[AUTH] Sending device certificate to car")
+				major, minor, certData := dev.GetDeviceAuthenticationInfo()
+				ipod.Send(tr, &RetDevAuthenticationInfo{
+					Major:              major,
+					Minor:              minor,
+					CertCurrentSection: 0,
+					CertMaxSection:     0,
+					CertData:           certData,
+				})
 				log.Info("[AUTH] Waiting for car to send challenge (GetDevAuthenticationSignatureV2)")
 				// Car will now send us a challenge to sign via GetDevAuthenticationSignatureV2
 			}
