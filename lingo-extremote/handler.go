@@ -119,6 +119,11 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *PlayControl:
 		ipod.Respond(req, tr, ackSuccess(req))
+		// Notify the car that playback is now active
+		ipod.Send(tr, &PlayStatusChangeNotification{
+			EventID:     0x00, // PlayStatusChanged
+			PlayerState: byte(PlayerStatePlaying),
+		})
 	case *GetTrackArtworkTimes:
 		ipod.Respond(req, tr, &RetTrackArtworkTimes{})
 	case *GetShuffle:
@@ -147,8 +152,6 @@ func HandleExtRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceExtRemo
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *SelectSortDBRecord:
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Notify the car that the track selection changed so it proceeds to playback
-		ipod.Send(tr, &PlayStatusChangeNotification{Status: 0x01})
 	case *GetColorDisplayImageLimits:
 		ipod.Respond(req, tr, &ReturnColorDisplayImageLimits{
 			MaxWidth:    640,
