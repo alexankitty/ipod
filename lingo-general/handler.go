@@ -201,6 +201,7 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 
 				ipod.Send(tr, &GetDevAuthenticationSignatureV2{
 					Challenge: challenge,
+					Counter:   0x01,
 				})
 				log.Info("[AUTH] Waiting for car to sign challenge (RetDevAuthenticationSignature)...")
 				// Car will respond with RetDevAuthenticationSignature containing its signature
