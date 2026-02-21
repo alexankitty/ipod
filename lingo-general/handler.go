@@ -290,6 +290,7 @@ func HandleGeneral(req *ipod.Command, tr ipod.CommandWriter, dev DeviceGeneral) 
 	case *GetUIMode:
 		ipod.Respond(req, tr, &RetUIMode{UIMode: dev.UIMode()})
 	case *SetUIMode:
+		dev.SetUIMode(msg.UIMode)
 		ipod.Respond(req, tr, ackSuccess(req))
 
 	case *StartIDPS:

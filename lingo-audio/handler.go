@@ -22,9 +22,31 @@ func Start(tr ipod.CommandWriter) {
 func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) error {
 	switch msg := req.Payload.(type) {
 	case *AccAck:
+		// Car acknowledges our sample rate caps request
+		// No additional action needed
+
 	case *RetAccSampleRateCaps:
-		ipod.Respond(req, tr, &TrackNewAudioAttributes{
-			SampleRate: 44100,
+		// Car sends its supported sample rates
+		// Acknowledge receipt
+		ipod.Respond(req, tr, &AccAck{
+			Status: ACKStatusSuccess,
+			CmdID:  0x03, // RetAccSampleRateCaps command ID
+		})
+
+	case *TrackNewAudioAttributes:
+		// Car sends audio attributes and is ready for audio
+		// Acknowledge with AccAck
+		ipod.Respond(req, tr, &AccAck{
+			Status: ACKStatusSuccess,
+			CmdID:  0x04, // TrackNewAudioAttributes command ID
+		})
+
+	case *SetVideoDelay:
+		// Car sets video delay offset
+		// Acknowledge with AccAck
+		ipod.Respond(req, tr, &AccAck{
+			Status: ACKStatusSuccess,
+			CmdID:  0x05, // SetVideoDelay command ID
 		})
 
 	default:
