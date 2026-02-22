@@ -124,16 +124,32 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 	case *SelectDBRecord:
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *GetNumberCategorizedDBRecords:
-		// Return 0 for all categories so the car skips the DB browse loop
-		// and proceeds immediately to PlayCurrentSelection(-1). The 2+ second
-		// browse loop was causing PlayCurrentSelection to miss the car's 3.7s
-		// audio-open deadline and the USB audio interface was being closed.
+		// Per rockbox iap-lingo4.c and libiap: returning 0 for Playlist and
+		// Track causes some head units (e.g. Alpine) to hang or loop forever.
+		// Return a non-zero dummy count for Playlist and Track; 0 for
+		// categories we don't support (Genre, Composer, AudioBook, Podcast).
+		var count int32
+		switch msg.CategoryType {
+		case DbCategoryPlaylist:
+			count = 1 // at least one playlist (the current queue)
+		case DbCategoryTrack, DbCategoryArtist, DbCategoryAlbum:
+			count = 1 // at least one track playing
+		default:
+			count = 0
+		}
 		ipod.Respond(req, tr, &ReturnNumberCategorizedDBRecords{
-			RecordCount: 0,
+			RecordCount: count,
 		})
 	case *RetrieveCategorizedDatabaseRecords:
-		// Shouldn't be reached when RecordCount=0, but respond gracefully.
-		ipod.Respond(req, tr, &ACK{Status: ACKStatusFailed, CmdID: req.ID.CmdID()})
+		// The car fetches the record(s) it found via GetNumberCategorizedDBRecords.
+		// We only have one virtual entry per category; return it regardless of
+		// the requested Offset/Count.
+		var name [16]byte
+		copy(name[:], "Bluetooth")
+		ipod.Respond(req, tr, &ReturnCategorizedDatabaseRecord{
+			RecordCategoryIndex: 0,
+			String:              name,
+		})
 	case *GetPlayStatus:
 		length, pos := uint32(300_000), uint32(0)
 		if dev != nil {
