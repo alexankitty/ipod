@@ -134,7 +134,7 @@ func main() {
 				},
 				cli.StringFlag{
 					Name:  "sample-rate-cmd",
-					Value: "systemctl restart bluealsa-aplay",
+					Value: "",
 					Usage: "Shell command to run when the negotiated sample rate changes (rate passed as $IPOD_SAMPLE_RATE)",
 				},
 			},
@@ -464,7 +464,18 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 		if avrcpSource != nil {
 			extDev = avrcpSource
 		}
+		wasPlaying := extRemoteHandler.IsPlaying()
 		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
+		nowPlaying := extRemoteHandler.IsPlaying()
+		// Send TrackNewAudioAttributes whenever we transition paused→playing
+		// (PlayControl Toggle/Play) or on PlayCurrentSelection, so the car
+		// reopens its USB audio interface (alt=1) before audio starts flowing.
+		if !wasPlaying && nowPlaying {
+			audio.ReopenAudio(cmdWriter)
+		}
+		if _, ok := cmd.Payload.(*extremote.PlayCurrentSelection); ok {
+			audio.ReopenAudio(cmdWriter)
+		}
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, devAudio)
 	}
