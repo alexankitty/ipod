@@ -36,6 +36,9 @@ type ExtRemoteHandler struct {
 // NewExtRemoteHandler returns a handler with playing=false (paused initial state).
 func NewExtRemoteHandler() *ExtRemoteHandler { return &ExtRemoteHandler{} }
 
+// IsPlaying returns the current tracked playing state.
+func (h *ExtRemoteHandler) IsPlaying() bool { return h.playing }
+
 func (h *ExtRemoteHandler) playerState() PlayerState {
 	if h.playing {
 		return PlayerStatePlaying
@@ -177,30 +180,20 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		})
 	case *SetPlayStatusChangeNotification:
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Push Paused + TrackIndex(0) so the car knows a track exists but is
-		// paused. PlayControl(Toggle) then means "start playing" and the car
-		// follows immediately with PlayCurrentSelection in a single toggle
-		// cycle — no 2-second debounce gap.
-		// (Pushing Playing caused the car to Toggle→Pause first, then wait 2s
-		// before Toggle→Play, causing PlayCurrentSelection to miss the 3.716s
-		// audio-open deadline.)
+		// Push Paused so the car sees we are paused and will send Toggle to
+		// start playback.  Do NOT push TrackIndex here: per libiap and rockbox
+		// reference implementations, TrackIndex should only be sent on real
+		// track changes, not from the notification-enable handler.  Sending
+		// TrackIndex here triggers a DB browse loop.
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00, // PlayStatusChanged
 			PlayerState: byte(PlayerStatePaused),
-		})
-		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
-			EventID:    0x01,
-			TrackIndex: 0,
 		})
 	case *SetPlayStatusChangeNotificationShort:
 		ipod.Respond(req, tr, ackSuccess(req))
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00,
 			PlayerState: byte(PlayerStatePaused),
-		})
-		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
-			EventID:    0x01,
-			TrackIndex: 0,
 		})
 	case *PlayCurrentSelection:
 		h.playing = true
@@ -253,21 +246,15 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			dev.MediaControl(avrcpCmd)
 		}
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Always notify the current state after a PlayControl.
+		// Notify the new play state.  Per libiap and rockbox reference
+		// implementations, PlayControl does NOT send TrackIndex — that only
+		// belongs on real track-change events.  Sending TrackIndex here
+		// triggers a DB browse loop.  main.go detects the paused→playing
+		// transition via IsPlaying() and calls audio.ReopenAudio() directly.
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00,
 			PlayerState: byte(h.playerState()),
 		})
-		// Send TrackIndexChanged only when transitioning TO playing.
-		// This prompts the car to issue PlayCurrentSelection (re-opens audio).
-		// Sending it on Pause/Toggle-off would confuse the car into thinking a
-		// new track started while it's trying to pause.
-		if h.playing && !wasPlaying {
-			ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
-				EventID:    0x01,
-				TrackIndex: 0,
-			})
-		}
 	case *GetTrackArtworkTimes:
 		ipod.Respond(req, tr, &RetTrackArtworkTimes{})
 	case *GetShuffle:

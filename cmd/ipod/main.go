@@ -428,11 +428,17 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 		if avrcpSource != nil {
 			extDev = avrcpSource
 		}
+		wasPlaying := extRemoteHandler.IsPlaying()
 		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
-		// After PlayCurrentSelection the car expects a fresh TrackNewAudioAttributes
-		// to reopen its USB audio interface.  Without it the car closes the audio
-		// stream ~1 second after the initial open because it never saw attributes
-		// for the "new" track.
+		nowPlaying := extRemoteHandler.IsPlaying()
+		// Reopen the USB audio interface (TrackNewAudioAttributes) whenever we
+		// transition from paused to playing — either via PlayControl(Toggle/Play)
+		// or via PlayCurrentSelection.  This avoids needing TrackIndex
+		// notifications (which trigger DB browse loops) while still ensuring
+		// the car opens alt=1 when audio should start flowing.
+		if (!wasPlaying && nowPlaying) {
+			audio.ReopenAudio(cmdWriter)
+		}
 		if _, ok := cmd.Payload.(*extremote.PlayCurrentSelection); ok {
 			audio.ReopenAudio(cmdWriter)
 		}
