@@ -29,14 +29,22 @@ func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) erro
 		// No additional action needed
 
 	case *RetAccSampleRateCaps:
-		// Car sends the sample rates it supports.  Pick the highest one so we
-		// get the best audio quality, falling back to 44100 if the list is
-		// empty or contains no recognised value.
+		// Prefer 48000 Hz to match BlueALSA's aptX output and avoid a
+		// resample.  If the car doesn't advertise 48000, fall back to the
+		// highest rate it does support, then 44100 as a last resort.
+		const preferredRate uint32 = 48000
 		var bestRate uint32 = 44100
+		hasPreferred := false
 		for _, rate := range msg.SampleRates {
+			if rate == preferredRate {
+				hasPreferred = true
+			}
 			if rate > bestRate {
 				bestRate = rate
 			}
+		}
+		if hasPreferred {
+			bestRate = preferredRate
 		}
 
 		ipod.Respond(req, tr, &AccAck{
