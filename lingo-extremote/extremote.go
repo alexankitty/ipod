@@ -388,6 +388,7 @@ type SetPlayStatusChangeNotification struct {
 type SetPlayStatusChangeNotificationShort struct {
 	Enabled bool
 }
+
 // PlayStatusChangeNotification (0x0027) notifies the car of a playback state change.
 // EventID 0x00 = PlayStatusChanged, followed by 1 byte PlayerState.
 // EventID 0x01 = TrackIndexChanged, followed by 4 bytes track index.
