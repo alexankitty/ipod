@@ -406,6 +406,7 @@ func initAVRCP() {
 	}
 	log.Info("[AVRCP] D-Bus source started")
 	avrcpSource = src
+	devGeneral.BtSource = src
 }
 
 func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {

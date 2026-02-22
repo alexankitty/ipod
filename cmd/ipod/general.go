@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/oandrew/ipod"
+	"github.com/oandrew/ipod/avrcp"
 	audio "github.com/oandrew/ipod/lingo-audio"
 	general "github.com/oandrew/ipod/lingo-general"
 )
@@ -34,6 +35,7 @@ type DevGeneral struct {
 	tokens        []general.FIDTokenValue
 	cmdWriter     ipod.CommandWriter
 	authChallenge [20]byte
+	BtSource      *avrcp.Source // provides connected BT device name
 }
 
 var _ general.DeviceGeneral = &DevGeneral{}
@@ -47,6 +49,11 @@ func (d *DevGeneral) SetUIMode(mode general.UIMode) {
 }
 
 func (d *DevGeneral) Name() string {
+	if d.BtSource != nil {
+		if name := d.BtSource.ConnectedDeviceName(); name != "" {
+			return name
+		}
+	}
 	return "ipod-gadget"
 }
 

@@ -27,8 +27,9 @@ type PlayState struct {
 
 // Source polls BlueZ via busctl for AVRCP MediaPlayer1 state.
 type Source struct {
-	mu          sync.RWMutex
-	state       PlayState
+	mu           sync.RWMutex
+	state        PlayState
+	deviceName   string // friendly name of the most recently connected BT A2DP device
 	lastTrackLog string // dedup track log lines
 }
 
@@ -97,6 +98,40 @@ func (s *Source) MediaControl(method string) {
 	exec.Command("busctl", "--system", "call",
 		"org.bluez", path,
 		"org.bluez.MediaPlayer1", method).Run()
+}
+
+// ConnectedDeviceName returns the cached friendly name of the most recently
+// connected Bluetooth A2DP device (e.g. "Alex's iPhone"), or "" if none.
+func (s *Source) ConnectedDeviceName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.deviceName
+}
+
+// queryDeviceName derives the BlueZ Device1 path from a MediaPlayer1 path
+// and retrieves the device's friendly Name property.
+// playerPath looks like /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0.
+func queryDeviceName(playerPath string) string {
+	idx := strings.LastIndex(playerPath, "/player")
+	if idx < 0 {
+		return ""
+	}
+	devicePath := playerPath[:idx]
+	out, err := exec.Command("busctl", "--system", "--json=short",
+		"get-property", "org.bluez", devicePath,
+		"org.bluez.Device1", "Name").Output()
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+	var v busctlVariant
+	if json.Unmarshal(bytes.TrimSpace(out), &v) != nil {
+		return ""
+	}
+	var name string
+	if json.Unmarshal(v.Data, &name) != nil {
+		return ""
+	}
+	return name
 }
 
 func (s *Source) snapshot() PlayState {
@@ -232,6 +267,13 @@ func (s *Source) refresh() {
 	path := findPlayerPath()
 	if path == "" {
 		return
+	}
+
+	// Update cached device name whenever we have a valid player path.
+	if name := queryDeviceName(path); name != "" {
+		s.mu.Lock()
+		s.deviceName = name
+		s.mu.Unlock()
 	}
 
 	props := getAllProperties(path)
