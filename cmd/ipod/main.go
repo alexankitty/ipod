@@ -465,6 +465,13 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 			extDev = avrcpSource
 		}
 		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
+		// After PlayCurrentSelection, re-send TrackNewAudioAttributes so the car
+		// reopens its USB audio interface (alt=1).  This must happen exactly once
+		// per PlayCurrentSelection; we do it here rather than in the extremote
+		// handler to keep the audio and extremote packages decoupled.
+		if _, ok := cmd.Payload.(*extremote.PlayCurrentSelection); ok {
+			audio.ReopenAudio(cmdWriter)
+		}
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, devAudio)
 	}
