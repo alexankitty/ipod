@@ -205,12 +205,11 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 	case *PlayCurrentSelection:
 		h.playing = true
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Notify car that track index 0 is now the current track.
-		// This prompts the car to query title/artist/album for display.
-		ipod.Send(tr, &PlayStatusChangeNotificationTrackIndex{
-			EventID:    0x01,
-			TrackIndex: 0,
-		})
+		// Do NOT send another TrackIndexChanged here. The car issued
+		// PlayCurrentSelection precisely because it already received our
+		// TrackIndexChanged (sent from PlayControl). A second notification
+		// would make the car think a new track started mid-play, causing it
+		// to immediately Toggle→Pause and re-open audio in a 2-second loop.
 	case *PlayControl:
 		wasPlaying := h.playing
 		// Determine the BlueZ MediaPlayer1 method to call on the phone.
