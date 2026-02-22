@@ -204,6 +204,13 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		})
 	case *PlayCurrentSelection:
 		h.playing = true
+		// Resume playback on the phone.  The car always sends a PlayControl
+		// Toggle(→Pause) immediately before PlayCurrentSelection, so the phone
+		// will be paused at this point.  Without calling Play here the phone
+		// stays paused and the car receives silence on the USB audio stream.
+		if dev != nil {
+			dev.MediaControl("Play")
+		}
 		ipod.Respond(req, tr, ackSuccess(req))
 		// Notify the car that track 0 is now playing.  This ACKs the track
 		// selection and prompts the car to re-open the USB audio interface.
