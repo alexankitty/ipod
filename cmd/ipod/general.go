@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,33 @@ func (d *DevGeneral) UIMode() general.UIMode {
 
 func (d *DevGeneral) SetUIMode(mode general.UIMode) {
 	d.uimode = mode
+}
+
+// btAliasFile is where the last confirmed-connected device alias is persisted
+// across restarts.
+const btAliasFile = "/var/lib/ipod-gadget/last_bt_alias"
+
+// loadPersistedBTAlias reads the last stored alias from disk and seeds the
+// in-memory cache. Called once during startup before the refresh loop.
+func loadPersistedBTAlias() {
+	data, err := os.ReadFile(btAliasFile)
+	if err != nil {
+		return // file may not exist yet – that's fine
+	}
+	alias := strings.TrimSpace(string(data))
+	if alias != "" {
+		btAlias.Lock()
+		btAlias.value = alias
+		btAlias.Unlock()
+	}
+}
+
+// persistBTAlias writes alias to disk so it survives restarts.
+func persistBTAlias(alias string) {
+	if err := os.MkdirAll(filepath.Dir(btAliasFile), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(btAliasFile, []byte(alias+"\n"), 0o644)
 }
 
 // btAlias is a cache of the last known connected Bluetooth device alias.
@@ -121,6 +150,7 @@ func refreshBTAlias() {
 			btAlias.Lock()
 			btAlias.value = dp.alias
 			btAlias.Unlock()
+			persistBTAlias(dp.alias)
 			return
 		}
 	}
@@ -131,8 +161,10 @@ func refreshBTAlias() {
 	}
 }
 
-// startBTAliasRefresher does an immediate async lookup then refreshes every 60s.
+// startBTAliasRefresher loads any persisted alias, then does an immediate async
+// lookup and continues refreshing every 60s.
 func startBTAliasRefresher() {
+	loadPersistedBTAlias()
 	go func() {
 		refreshBTAlias()
 		for range time.Tick(60 * time.Second) {
