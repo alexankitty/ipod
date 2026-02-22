@@ -36,6 +36,9 @@ type ExtRemoteHandler struct {
 // NewExtRemoteHandler returns a handler with playing=false (paused initial state).
 func NewExtRemoteHandler() *ExtRemoteHandler { return &ExtRemoteHandler{} }
 
+// IsPlaying returns the current tracked playing state.
+func (h *ExtRemoteHandler) IsPlaying() bool { return h.playing }
+
 func (h *ExtRemoteHandler) playerState() PlayerState {
 	if h.playing {
 		return PlayerStatePlaying

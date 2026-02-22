@@ -18,8 +18,21 @@ type DeviceAudio interface {
 // 	return ACKPending{Status: ACKStatusPending, CmdID: uint8(req.ID.CmdID()), MaxWait: maxWait}
 // }
 
+// negotiatedRate is the sample rate agreed with the car during the audio
+// handshake.  It is re-sent with each TrackNewAudioAttributes so the car
+// reopens its audio stream after every PlayCurrentSelection.
+var negotiatedRate uint32 = 44100
+
 func Start(tr ipod.CommandWriter) {
 	ipod.Send(tr, &GetAccSampleRateCaps{})
+}
+
+// ReopenAudio re-sends TrackNewAudioAttributes using the last negotiated rate.
+// Call this after PlayCurrentSelection so the car reopens its audio interface.
+func ReopenAudio(tr ipod.CommandWriter) {
+	ipod.Send(tr, &TrackNewAudioAttributes{
+		SampleRate: negotiatedRate,
+	})
 }
 
 func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) error {
@@ -46,6 +59,8 @@ func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) erro
 		if hasPreferred {
 			bestRate = preferredRate
 		}
+
+		negotiatedRate = bestRate
 
 		ipod.Respond(req, tr, &AccAck{
 			Status: ACKStatusSuccess,
