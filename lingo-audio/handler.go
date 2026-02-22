@@ -8,6 +8,10 @@ type DeviceAudio interface {
 	// SetSampleRate is called once the best mutually-supported sample rate has
 	// been selected so the audio stack can reconfigure itself accordingly.
 	SetSampleRate(rate uint32)
+	// SupportedSampleRates returns the sample rates the local audio backend
+	// (e.g. BlueALSA) is currently able to deliver.  An empty or nil slice
+	// means "no constraint" and all rates advertised by the car are eligible.
+	SupportedSampleRates() []uint32
 }
 
 // func ackSuccess(req ipod.Packet) ACK {
@@ -22,6 +26,12 @@ type DeviceAudio interface {
 // handshake.  It is re-sent with each TrackNewAudioAttributes so the car
 // reopens its audio stream after every PlayCurrentSelection.
 var negotiatedRate uint32 = 44100
+
+// NegotiatedRate returns the sample rate most recently agreed with the car
+// via the audio handshake (RetAccSampleRateCaps → TrackNewAudioAttributes).
+// Falls back to 44100 before any handshake has run.  Used by other lingos
+// (e.g. ExtRemote) to send TrackNewAudioAttributes with the correct rate.
+func NegotiatedRate() uint32 { return negotiatedRate }
 
 func Start(tr ipod.CommandWriter) {
 	ipod.Send(tr, &GetAccSampleRateCaps{})
@@ -42,23 +52,33 @@ func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) erro
 		// No additional action needed
 
 	case *RetAccSampleRateCaps:
-		// Prefer 48000 Hz to match BlueALSA's aptX output and avoid a
-		// resample.  If the car doesn't advertise 48000, fall back to the
-		// highest rate it does support, then 44100 as a last resort.
-		const preferredRate uint32 = 48000
+		// Build a set of rates the local audio backend (BlueALSA) supports.
+		// If the backend returns an empty list treat all car rates as eligible.
+		var localRates map[uint32]bool
+		if dev != nil {
+			if local := dev.SupportedSampleRates(); len(local) > 0 {
+				localRates = make(map[uint32]bool, len(local))
+				for _, r := range local {
+					localRates[r] = true
+				}
+			}
+		}
+
+		// Pick the highest rate supported by both the car and the local backend.
 		var bestRate uint32 = 44100
-		hasPreferred := false
+		foundMatch := false
 		for _, rate := range msg.SampleRates {
-			if rate == preferredRate {
-				hasPreferred = true
+			if localRates != nil && !localRates[rate] {
+				continue // local backend cannot deliver this rate
 			}
-			if rate > bestRate {
+			if rate > bestRate || !foundMatch {
 				bestRate = rate
+				foundMatch = true
 			}
 		}
-		if hasPreferred {
-			bestRate = preferredRate
-		}
+		// If the intersection was empty (local constraint vs car caps) fall back
+		// to 44100, which every car and codec combination should tolerate.
+		// foundMatch == false means we stick with the 44100 default.
 
 		negotiatedRate = bestRate
 

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -502,6 +506,64 @@ func (a *audioDevice) SetSampleRate(rate uint32) {
 			log.WithError(err).WithField("output", string(out)).Warn("[Audio] sample-rate-cmd failed")
 		}
 	}()
+}
+
+// SupportedSampleRates queries BlueALSA via D-Bus for the sampling frequency
+// of every A2DP source PCM (phone → accessory).  The set of rates is returned
+// so the audio lingo handler can intersect it with what the car advertises and
+// pick the single highest mutually-supported rate.
+// Returns nil when BlueALSA is unavailable; the handler treats nil as
+// "no constraint" and falls back to picking the highest car-advertised rate.
+func (a *audioDevice) SupportedSampleRates() []uint32 {
+	// Enumerate all BlueALSA objects and collect paths that contain a2dpsrc.
+	out, err := exec.Command("busctl", "--system", "tree", "org.bluealsa").Output()
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+
+	var paths []string
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimLeft(sc.Text(), "├─└│ ")
+		if strings.HasPrefix(line, "/org/bluealsa") && strings.Contains(line, "a2dpsrc") {
+			paths = append(paths, line)
+		}
+	}
+
+	type busctlVariant struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+
+	rateSet := make(map[uint32]bool)
+	for _, path := range paths {
+		propOut, err := exec.Command("busctl", "--system", "--json=short",
+			"get-property", "org.bluealsa", path,
+			"org.bluealsa.PCM1", "SamplingFrequency").Output()
+		if err != nil || len(propOut) == 0 {
+			continue
+		}
+		var v busctlVariant
+		if err := json.Unmarshal(bytes.TrimSpace(propOut), &v); err != nil {
+			continue
+		}
+		var freq uint32
+		if err := json.Unmarshal(v.Data, &freq); err != nil {
+			continue
+		}
+		if freq > 0 {
+			rateSet[freq] = true
+		}
+	}
+
+	if len(rateSet) == 0 {
+		return nil
+	}
+	rates := make([]uint32, 0, len(rateSet))
+	for r := range rateSet {
+		rates = append(rates, r)
+	}
+	return rates
 }
 
 var devAudio = &audioDevice{}

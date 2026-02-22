@@ -265,7 +265,7 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		if time.Since(h.lastAudioAttrSent) >= audioAttrDebounce {
 			h.lastAudioAttrSent = time.Now()
 			h.audioEstablished = true
-			ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: 44100})
+			ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: audio.NegotiatedRate()})
 		}
 	case *PlayControl:
 		wasPlaying := h.playing
@@ -286,13 +286,20 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 				// Was paused — start playing.
 				h.playing = true
 				avrcpCmd = "Play"
+				// Reopen the audio stream at the negotiated rate so the car uses
+				// the correct sample rate when resuming from pause.
+				ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: audio.NegotiatedRate()})
 			}
 		case PlayControlPlay:
 			h.playing = true
 			avrcpCmd = "Play"
+			// Reopen the audio stream at the negotiated rate.
+			ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: audio.NegotiatedRate()})
 		case PlayControlPause:
 			h.playing = false
 			avrcpCmd = "Pause"
+			// Notify the car of the paused state at the current negotiated rate.
+			ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: audio.NegotiatedRate()})
 		case PlayControlStop:
 			h.playing = false
 			avrcpCmd = "Pause"
