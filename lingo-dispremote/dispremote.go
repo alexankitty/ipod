@@ -86,6 +86,13 @@ type RemoteEventNotification struct {
 	EventNum  byte
 	EventData []byte
 }
+
+func (r *RemoteEventNotification) MarshalBinary() ([]byte, error) {
+	buf := bytes.Buffer{}
+	buf.WriteByte(r.EventNum)
+	buf.Write(r.EventData)
+	return buf.Bytes(), nil
+}
 type GetRemoteEventStatus struct {
 }
 type RetRemoteEventStatus struct {

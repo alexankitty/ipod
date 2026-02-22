@@ -103,7 +103,11 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 		case InfoTypeAudiobookSpeed:
 			t.InfoData = &InfoAudiobookSpeed{0x00}
 		case InfoTypeTrackPositionSec:
-			t.InfoData = &InfoTrackPositionSec{0}
+			var posSec uint16
+			if dev != nil {
+				posSec = uint16(dev.TrackPositionMs() / 1000)
+			}
+			t.InfoData = &InfoTrackPositionSec{posSec}
 		case InfoTypeVolume2:
 			t.InfoData = &InfoVolume2{
 				MuteState:           0x00,
@@ -125,10 +129,11 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 		if dev != nil {
 			pos = dev.TrackPositionMs()
 			l := dev.TrackLengthMs()
-			if pos+300_000 > l {
-				l = pos + 300_000
+			if l > 0 {
+				totalMs = l
+			} else {
+				totalMs = pos + 300_000
 			}
-			totalMs = l
 		}
 		ipod.Respond(req, tr, &RetPlayStatus{
 			PlayState:   byte(PlayStatusPlaying),
@@ -148,12 +153,10 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 		case TrackInfoTypeCaps:
 			totalMs := uint32(300_000)
 			if dev != nil {
-				p := dev.TrackPositionMs()
 				l := dev.TrackLengthMs()
-				if p+300_000 > l {
-					l = p + 300_000
+				if l > 0 {
+					totalMs = l
 				}
-				totalMs = l
 			}
 			t.InfoData = &TrackInfoCaps{
 				Caps:         0x00,
@@ -171,7 +174,7 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 				artist = dev.TrackArtist()
 			}
 			t.InfoData = &TrackInfoArtist{
-				Name: ipod.StringToBytes(artist),
+				Name: ipod.StringToBytes(ipod.TruncateRunes(artist, 20)),
 			}
 		case TrackInfoTypeAlbum:
 			album := ""
@@ -179,7 +182,7 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 				album = dev.TrackAlbum()
 			}
 			t.InfoData = &TrackInfoAlbum{
-				Name: ipod.StringToBytes(album),
+				Name: ipod.StringToBytes(ipod.TruncateRunes(album, 20)),
 			}
 		case TrackInfoTypeGenre:
 			t.InfoData = &TrackInfoGenre{
@@ -191,7 +194,7 @@ func HandleDispRemote(req *ipod.Command, tr ipod.CommandWriter, dev DeviceDispRe
 				title = dev.TrackTitle()
 			}
 			t.InfoData = &TrackInfoTrack{
-				Title: ipod.StringToBytes(title),
+				Title: ipod.StringToBytes(ipod.TruncateRunes(title, 20)),
 			}
 		case TrackInfoTypeComposer:
 			t.InfoData = &TrackInfoComposer{

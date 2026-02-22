@@ -51,9 +51,19 @@ func (s *RetAccSampleRateCaps) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
+// TrackNewAudioAttributes is sent by the accessory (us) to the car to open or
+// re-open the USB audio stream. Per iAP spec it must be sent once when starting
+// a new track, and re-sent only if the sample rate changes.
 type TrackNewAudioAttributes struct {
-	SampleRate       uint32
-	SoundCheckValue  uint32
+	// SampleRate is the PCM sample rate in Hz (e.g. 44100).
+	SampleRate uint32
+	// SoundCheck is the iTunesSound Check gain adjustment in dB, rounded to the
+	// nearest integer and stored as a uint32. 0 means Sound Check is disabled /
+	// no adjustment.
+	SoundCheck uint32
+	// VolumeAdjustment is the per-track volume adjustment (replay gain) in dB,
+	// rounded to the nearest integer and stored as a uint32. 0 means no
+	// adjustment.
 	VolumeAdjustment uint32
 }
 type SetVideoDelay struct {

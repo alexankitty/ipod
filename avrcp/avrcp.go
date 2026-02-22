@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,11 +28,61 @@ type PlayState struct {
 
 // Source polls BlueZ via busctl for AVRCP MediaPlayer1 state.
 type Source struct {
-	mu           sync.RWMutex
-	state        PlayState
-	positionTime time.Time  // wall-clock time when state.Position was last set from BlueZ
-	deviceName   string     // friendly name of the most recently connected BT A2DP device
-	lastTrackLog string     // dedup track log lines
+	mu               sync.RWMutex
+	state            PlayState
+	positionTime     time.Time    // wall-clock time when state.Position was last set from BlueZ
+	posRefreshedAt   time.Time    // wall-clock time when position was last refreshed while playing
+	deviceName       string       // friendly name of the most recently connected BT A2DP device
+	lastTrackLog     string       // dedup track log lines
+	trackChanged     uint32       // atomic: 1 when new track data arrived, cleared by TrackChanged()
+	playStateChanged uint32       // atomic: 1 when Playing transitions, cleared by PlayStateChanged()
+	lastKnownTitle   string       // detect title changes to avoid spurious notifications
+	lastKnownPlaying bool         // detect play/pause transitions
+	notifyCh         chan struct{} // signalled (non-blocking) on track change or play state change
+}
+
+// Notify returns a channel that receives a value whenever track metadata
+// changes. Consumers should drain it promptly; sends are non-blocking so
+// a slow consumer only misses duplicates, never stalls the source.
+func (s *Source) Notify() <-chan struct{} { return s.notifyCh }
+
+// TrackChanged returns true (and resets the flag) if new track metadata has
+// arrived since the last call. Used by the iAP handler to notify the car.
+func (s *Source) TrackChanged() bool {
+	return atomic.SwapUint32(&s.trackChanged, 0) != 0
+}
+
+// signalTrackChanged sets the trackChanged flag and does a non-blocking send
+// on the notify channel so processFrames can push a notification immediately.
+func (s *Source) signalTrackChanged() {
+	atomic.StoreUint32(&s.trackChanged, 1)
+	select {
+	case s.notifyCh <- struct{}{}:
+	default:
+	}
+}
+
+// PlayStateChanged returns true (and resets the flag) if the Playing state
+// has changed since the last call. Used to push PlayStatusChangeNotification
+// to the car so it can start/stop its built-in playback timer.
+func (s *Source) PlayStateChanged() (changed bool, playing bool) {
+	if atomic.SwapUint32(&s.playStateChanged, 0) == 0 {
+		return false, false
+	}
+	s.mu.RLock()
+	p := s.state.Playing
+	s.mu.RUnlock()
+	return true, p
+}
+
+// signalPlayStateChanged sets the playStateChanged flag and wakes the notify
+// channel so processFrames can immediately push the new state to the car.
+func (s *Source) signalPlayStateChanged() {
+	atomic.StoreUint32(&s.playStateChanged, 1)
+	select {
+	case s.notifyCh <- struct{}{}:
+	default:
+	}
 }
 
 func newPlayState() PlayState {
@@ -43,7 +94,10 @@ func newPlayState() PlayState {
 // NewSource starts a background AVRCP poller and signal watcher, returning immediately.
 // It never returns an error — polling failures are handled gracefully.
 func NewSource() (*Source, error) {
-	s := &Source{state: newPlayState(), positionTime: time.Now()}
+	s := &Source{
+		state:    newPlayState(),
+		notifyCh: make(chan struct{}, 1),
+	}
 	go s.loop()
 	go s.watchSignals()
 	return s, nil
@@ -51,11 +105,26 @@ func NewSource() (*Source, error) {
 
 // PlaybackStatus implements extremote.DeviceExtRemote.
 // Returns (trackLength ms, trackPosition ms, playing).
+// The position is dead-reckoned forward from the last BlueZ report so that
+// the car's timer advances smoothly between BlueZ's ~1Hz position updates.
 func (s *Source) PlaybackStatus() (trackLength, trackPos uint32, playing bool) {
-	st, pos := s.snapshotWithPosition()
+	s.mu.RLock()
+	st := s.state
+	refreshedAt := s.posRefreshedAt
+	s.mu.RUnlock()
+
 	dur := st.Duration
 	if dur == 0 {
 		dur = 300_000 // 5-minute fallback when duration unknown
+	}
+	pos := st.Position
+	if st.Playing && !refreshedAt.IsZero() {
+		if elapsed := uint32(time.Since(refreshedAt).Milliseconds()); elapsed < dur {
+			pos += elapsed
+			if pos > dur {
+				pos = dur
+			}
+		}
 	}
 	return dur, pos, st.Playing
 }
@@ -77,7 +146,7 @@ func (s *Source) TrackAlbum() string { return s.snapshot().Album }
 
 // TrackPositionMs implements dispremote.DeviceDispRemote.
 func (s *Source) TrackPositionMs() uint32 {
-	_, pos := s.snapshotWithPosition()
+	_, pos, _ := s.PlaybackStatus()
 	return pos
 }
 
@@ -174,8 +243,8 @@ func (s *Source) loop() {
 
 // watchSignals runs dbus-monitor and triggers an immediate refresh whenever
 // the BlueZ MediaPlayer1 properties change (e.g. track skip, play/pause).
-// This ensures Track metadata is captured as soon as the phone sends it,
-// rather than waiting up to 500ms for the next poll.
+// When Track appears in the invalidated list, it also retries Get("Track")
+// directly since GetAll never includes it (emits-invalidates annotation).
 func (s *Source) watchSignals() {
 	for {
 		cmd := exec.Command("dbus-monitor", "--system",
@@ -190,16 +259,120 @@ func (s *Source) watchSignals() {
 			continue
 		}
 		sc := bufio.NewScanner(stdout)
+		isPlayer := false
 		for sc.Scan() {
 			line := sc.Text()
-			// Only react to player-path signals, not adapter-level ones.
 			if strings.Contains(line, "/player") {
+				isPlayer = true
 				go s.refresh()
+			} else if isPlayer && strings.Contains(line, `"Track"`) {
+				// Track appeared in invalidated array — BlueZ dropped its cache.
+				// Retry Get("Track") so BlueZ re-fetches from the phone.
+				go s.fetchTrackWithRetry(5, 300*time.Millisecond)
+				isPlayer = false
+			} else if strings.HasPrefix(strings.TrimSpace(line), "signal ") {
+				// start of a new signal — reset context
+				isPlayer = false
 			}
 		}
 		cmd.Wait()
 		time.Sleep(time.Second)
 	}
+}
+
+// fetchTrackWithRetry calls Get("Track") on MediaPlayer1 and retries up to
+// maxTries times with the given interval between attempts. BlueZ may need a
+// moment to issue GetElementAttributes to the phone after an invalidation.
+func (s *Source) fetchTrackWithRetry(maxTries int, interval time.Duration) {
+	path := findPlayerPath()
+	if path == "" {
+		return
+	}
+	for i := 0; i < maxTries; i++ {
+		if i > 0 {
+			time.Sleep(interval)
+		}
+		if s.fetchTrack(path) {
+			return
+		}
+	}
+	s.logOnce("[AVRCP] Track still unavailable after retries (phone not sending metadata)")
+}
+
+// fetchTrack calls Get("Track") directly via busctl. Returns true if track
+// data was successfully parsed and cached.
+func (s *Source) fetchTrack(path string) bool {
+	out, err := exec.Command("busctl", "--system", "--json=short",
+		"call", "org.bluez", path,
+		"org.freedesktop.DBus.Properties", "Get",
+		"ss", "org.bluez.MediaPlayer1", "Track").Output()
+	if err != nil || len(out) == 0 {
+		return false
+	}
+	// busctl Get returns: {"type":"v","data":{"type":"a{sv}","data":{"Title":{...},...}}}
+	var wrapper struct {
+		Type string `json:"type"`
+		Data struct {
+			Type string                   `json:"type"`
+			Data map[string]busctlVariant `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapper); err != nil {
+		return false
+	}
+	track := wrapper.Data.Data
+	if len(track) == 0 {
+		return false
+	}
+	s.mu.Lock()
+	next := s.state
+	s.mu.Unlock()
+	got := false
+	if t, ok := track["Title"]; ok {
+		var title string
+		if json.Unmarshal(t.Data, &title) == nil && title != "" {
+			next.Title = title
+			got = true
+		}
+	}
+	if a, ok := track["Artist"]; ok {
+		var artist string
+		if json.Unmarshal(a.Data, &artist) == nil {
+			next.Artist = artist
+			got = true
+		}
+	}
+	if a, ok := track["Album"]; ok {
+		var album string
+		if json.Unmarshal(a.Data, &album) == nil {
+			next.Album = album
+			got = true
+		}
+	}
+	if d, ok := track["Duration"]; ok {
+		var dur uint32
+		if json.Unmarshal(d.Data, &dur) == nil && dur > 0 {
+			next.Duration = dur
+			got = true
+		}
+	}
+	if !got {
+		return false
+	}
+	msg := fmt.Sprintf("[AVRCP] track (Get): title=%q artist=%q album=%q duration=%d",
+		next.Title, next.Artist, next.Album, next.Duration)
+	s.logOnce(msg)
+	s.mu.Lock()
+	changed := next.Title != s.lastKnownTitle
+	if changed {
+		s.lastKnownTitle = next.Title
+	}
+	s.state = next
+	s.mu.Unlock()
+	if changed {
+		s.signalTrackChanged()
+	}
+	return true
 }
 
 // findPlayerPath returns the D-Bus object path of the first BlueZ
@@ -313,12 +486,12 @@ func (s *Source) refresh() {
 	s.mu.RUnlock()
 
 	gotAny := false
+	gotPos := false
 
-	var newPositionTime time.Time
 	if pos, ok := getUint32(props, "Position"); ok {
 		next.Position = pos
-		newPositionTime = time.Now()
 		gotAny = true
+		gotPos = true
 	}
 
 	if status, ok := getString(props, "Status"); ok {
@@ -359,21 +532,73 @@ func (s *Source) refresh() {
 					gotAny = true
 				}
 			}
-			msg := fmt.Sprintf("[AVRCP] track: title=%q artist=%q album=%q duration=%d",
+			msg := fmt.Sprintf("[AVRCP] track (GetAll): title=%q artist=%q album=%q duration=%d",
 				next.Title, next.Artist, next.Album, next.Duration)
 			s.logOnce(msg)
+			// Detect title change and signal the car to refresh its display.
+			s.mu.RLock()
+			titleChanged := next.Title != s.lastKnownTitle
+			s.mu.RUnlock()
+			if titleChanged {
+				s.mu.Lock()
+				s.lastKnownTitle = next.Title
+				s.mu.Unlock()
+				s.signalTrackChanged()
+			}
 		} else {
 			s.logOnce("[AVRCP] Track property present but empty (phone not sending metadata)")
 		}
+	}
+
+	// If Track wasn't in GetAll (emits-invalidates means BlueZ won't include
+	// it unless it has a fresh value), try a direct Get("Track") as fallback.
+	// fetchTrack writes directly to s.state; re-read it afterwards so we
+	// don't overwrite the title/artist/album it just set when we write back.
+	if _, hasTrack := props["Track"]; !hasTrack {
+		s.fetchTrack(path)
+		// Merge: take whatever fetchTrack stored, then patch in position/playing.
+		var playingChanged bool
+		var newPlaying bool
+		s.mu.Lock()
+		if pos, ok := getUint32(props, "Position"); ok {
+			s.state.Position = pos
+			if s.state.Playing {
+				s.posRefreshedAt = time.Now()
+			}
+		}
+		if status, ok := getString(props, "Status"); ok {
+			newPlaying = status == "playing"
+			if newPlaying != s.lastKnownPlaying {
+				playingChanged = true
+				s.lastKnownPlaying = newPlaying
+			}
+			if !newPlaying {
+				s.posRefreshedAt = time.Time{}
+			}
+			s.state.Playing = newPlaying
+		}
+		s.mu.Unlock()
+		if playingChanged {
+			s.signalPlayStateChanged()
+		}
+		return
 	}
 
 	if !gotAny {
 		return
 	}
 	s.mu.Lock()
+	prevPlaying := s.lastKnownPlaying
 	s.state = next
-	if !newPositionTime.IsZero() {
-		s.positionTime = newPositionTime
+	s.lastKnownPlaying = next.Playing
+	if gotPos && next.Playing {
+		s.posRefreshedAt = time.Now()
+	} else if !next.Playing {
+		// Reset baseline on pause so we don't extrapolate stale position on resume.
+		s.posRefreshedAt = time.Time{}
 	}
 	s.mu.Unlock()
+	if next.Playing != prevPlaying {
+		s.signalPlayStateChanged()
+	}
 }

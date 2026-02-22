@@ -52,6 +52,8 @@ var Lingos struct {
 	SetPlayStatusChangeNotificationShort       `id:"0x0026"`
 	PlayStatusChangeNotification               `id:"0x0027"`
 	PlayStatusChangeNotificationTrackIndex     `id:"0x0027"`
+	PlayStatusChangeNotificationExtended       `id:"0x0027"`
+	PlayStatusChangeNotificationPosition       `id:"0x0027"`
 	PlayCurrentSelection                       `id:"0x0028"`
 	PlayControl                                `id:"0x0029"`
 	GetTrackArtworkTimes                       `id:"0x002A"`
@@ -390,17 +392,35 @@ type SetPlayStatusChangeNotificationShort struct {
 }
 
 // PlayStatusChangeNotification (0x0027) notifies the car of a playback state change.
-// EventID 0x00 = PlayStatusChanged, followed by 1 byte PlayerState.
+// EventID 0x00 = PlaybackStopped — NO extra bytes per spec.
 // EventID 0x01 = TrackIndexChanged, followed by 4 bytes track index.
 type PlayStatusChangeNotification struct {
 	EventID     byte
 	PlayerState byte
 }
 
+// PlayStatusChangeNotificationExtended sends EventID 0x06 (PlaybackStatusExtended).
+// State values per libiap/iap spec:
+//   0x02 = Stopped, 0x05 = FFwSeekStarted, 0x06 = RewSeekStarted,
+//   0x07 = FFwRewSeekStopped, 0x0A = Playing, 0x0B = Paused.
+type PlayStatusChangeNotificationExtended struct {
+	EventID byte // must be 0x06
+	State   byte // 0x0A = Playing, 0x0B = Paused
+}
+
 // PlayStatusChangeNotificationTrackIndex sends EventID 0x01 (TrackIndexChanged).
 type PlayStatusChangeNotificationTrackIndex struct {
 	EventID    byte
 	TrackIndex uint32
+}
+
+// PlayStatusChangeNotificationPosition sends EventID 0x04 (TrackPositionChanged).
+// Both rockbox and libiap send this every 500ms during playback to drive the
+// car's on-screen playback timer.  The car expects it unconditionally in
+// extended-interface mode regardless of the subscription mask.
+type PlayStatusChangeNotificationPosition struct {
+	EventID    byte   // must be 0x04
+	PositionMs uint32
 }
 type PlayCurrentSelection struct {
 	SelectedTrackIndex int32

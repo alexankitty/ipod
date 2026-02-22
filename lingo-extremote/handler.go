@@ -1,6 +1,10 @@
 package extremote
 
 import (
+	"time"
+
+	audio "github.com/oandrew/ipod/lingo-audio"
+
 	"github.com/oandrew/ipod"
 )
 
@@ -21,6 +25,12 @@ func ackSuccess(req *ipod.Command) *ACK {
 	return &ACK{Status: ACKStatusSuccess, CmdID: req.ID.CmdID()}
 }
 
+// audioAttrDebounce is the minimum interval between consecutive
+// TrackNewAudioAttributes sends. The car's stream-reopen cycle takes ~500ms
+// and causes it to send another PlayCurrentSelection; without debouncing this
+// creates a tight feedback loop.
+const audioAttrDebounce = 5 * time.Second
+
 // ExtRemoteHandler manages session-scoped state for lingo 0x04 (Extended Remote).
 // A new instance must be created for each USB session so that playing state
 // resets correctly on reconnect.
@@ -31,13 +41,39 @@ type ExtRemoteHandler struct {
 	// → PlayCurrentSelection arrives well within the car's 3.716-second
 	// audio-open window.
 	playing bool
+	// audioEstablished is true once TrackNewAudioAttributes has been sent at
+	// least once this session. Starts true so the IDPS send (from the audio
+	// lingo) counts — suppressing spurious TrackIndex pushes from notifyCh
+	// during start-up before the first PlayCurrentSelection.
+	audioEstablished bool
+	// lastAudioAttrSent is the time we last sent TrackNewAudioAttributes.
+	// Per spec, TrackNewAudioAttributes must be sent on every PlayCurrentSelection
+	// to (re)open the USB audio stream. However the car's stream-reopen cycle
+	// itself triggers another PlayCurrentSelection, so we debounce resends
+	// within audioAttrDebounce to break the feedback loop.
+	// Zero value means "never sent" — PlayCurrentSelection will always fire it.
+	lastAudioAttrSent time.Time
 }
 
-// NewExtRemoteHandler returns a handler with playing=false (paused initial state).
-func NewExtRemoteHandler() *ExtRemoteHandler { return &ExtRemoteHandler{} }
+// NewExtRemoteHandler returns a handler with playing=false (paused initial
+// state) and audioEstablished=true. The audio lingo always sends
+// TrackNewAudioAttributes during IDPS before any ExtRemote commands arrive,
+// so the stream is already open. Starting audioEstablished=true prevents
+// spurious TrackIndex pushes from notifyCh during start-up.
+// lastAudioAttrSent starts zero so the first PlayCurrentSelection always
+// sends TrackNewAudioAttributes (bypassing the debounce).
+func NewExtRemoteHandler() *ExtRemoteHandler {
+	return &ExtRemoteHandler{audioEstablished: true}
+}
 
-// IsPlaying returns the current tracked playing state.
+// IsPlaying reports the current playing state, used externally to build
+// async PlayStatusChangeNotification messages.
 func (h *ExtRemoteHandler) IsPlaying() bool { return h.playing }
+
+// AudioEstablished reports whether the USB audio stream has been opened at
+// least once this session, used to gate spontaneous TrackIndex pushes from
+// the AVRCP notifyCh.
+func (h *ExtRemoteHandler) AudioEstablished() bool { return h.audioEstablished }
 
 func (h *ExtRemoteHandler) playerState() PlayerState {
 	if h.playing {
@@ -85,11 +121,10 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		case TrackInfoCaps:
 			capLength := uint32(300_000)
 			if dev != nil {
-				cl, cp, _ := dev.PlaybackStatus()
-				if cp+300_000 > cl {
-					cl = cp + 300_000
+				cl, _, _ := dev.PlaybackStatus()
+				if cl > 0 {
+					capLength = cl
 				}
-				capLength = cl
 			}
 			info = &TrackCaps{
 				Caps:         0x0,
@@ -120,6 +155,11 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			CmdID:  req.ID.CmdID(),
 		})
 	case *ResetDBSelection:
+		// The car sends ResetDBSelection during DB browsing (e.g. after a
+		// TrackIndex notification). We just ack it. Do NOT reset
+		// audioEstablished here — doing so caused a spurious TrackIndex push
+		// from the next PlayControl, which triggered another 8-deep
+		// ResetDBSelection storm with no PlayCurrentSelection ever following.
 		ipod.Respond(req, tr, ackSuccess(req))
 	case *SelectDBRecord:
 		ipod.Respond(req, tr, ackSuccess(req))
@@ -155,10 +195,10 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		if dev != nil {
 			length, pos, _ = dev.PlaybackStatus()
 		}
-		// Live radio streams have positions that grow unboundedly.
-		// Ensure length is always ahead of position so the car doesn't
-		// think the track has ended.
-		if pos+300_000 > length {
+		// Only extend length when we have no real duration (live streams / not
+		// yet received). If we have a real AVRCP duration, trust it — the
+		// +300s guard was causing "-5:00" to show at the start of every track.
+		if length == 0 {
 			length = pos + 300_000
 		}
 		ipod.Respond(req, tr, &ReturnPlayStatus{
@@ -176,7 +216,7 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			title = dev.TrackTitle()
 		}
 		ipod.Respond(req, tr, &ReturnIndexedPlayingTrackTitle{
-			Title: ipod.StringToBytes(title),
+			Title: ipod.StringToBytes(ipod.TruncateRunes(title, 20)),
 		})
 	case *GetIndexedPlayingTrackArtistName:
 		artist := ""
@@ -184,7 +224,7 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			artist = dev.TrackArtist()
 		}
 		ipod.Respond(req, tr, &ReturnIndexedPlayingTrackArtistName{
-			ArtistName: ipod.StringToBytes(artist),
+			ArtistName: ipod.StringToBytes(ipod.TruncateRunes(artist, 20)),
 		})
 	case *GetIndexedPlayingTrackAlbumName:
 		album := ""
@@ -192,17 +232,16 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			album = dev.TrackAlbum()
 		}
 		ipod.Respond(req, tr, &ReturnIndexedPlayingTrackAlbumName{
-			AlbumName: ipod.StringToBytes(album),
+			AlbumName: ipod.StringToBytes(ipod.TruncateRunes(album, 20)),
 		})
 	case *SetPlayStatusChangeNotification:
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Push Paused so the car sees we are paused and will send Toggle to
-		// start playback.  Do NOT push TrackIndex here: per libiap and rockbox
-		// reference implementations, TrackIndex should only be sent on real
-		// track changes, not from the notification-enable handler.  Sending
-		// TrackIndex here triggers a DB browse loop.
+		// Push Paused + TrackIndex(0). The car uses EventID=0x00 as a trigger
+		// to start its PlayControl(Toggle) sequence. This specific format
+		// (0x00 byte + PlayerState byte) is what this car expects, even though
+		// the spec defines 0x00 as PlaybackStopped with no extra data.
 		ipod.Send(tr, &PlayStatusChangeNotification{
-			EventID:     0x00, // PlayStatusChanged
+			EventID:     0x00,
 			PlayerState: byte(PlayerStatePaused),
 		})
 	case *SetPlayStatusChangeNotificationShort:
@@ -213,30 +252,40 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 		})
 	case *PlayCurrentSelection:
 		h.playing = true
-		// Resume playback on the phone.  The car always sends a PlayControl
-		// Toggle(→Pause) immediately before PlayCurrentSelection, so the phone
-		// will be paused at this point.  Without calling Play here the phone
-		// stays paused and the car receives silence on the USB audio stream.
 		if dev != nil {
 			dev.MediaControl("Play")
 		}
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Do NOT send TrackIndexChanged here.  Sending it causes the car to
-		// restart the DB browse cycle, which leads to another
-		// Toggle→PlayCurrentSelection every ~10 seconds.
-		// Audio is re-opened by the ReopenAudio call in main.go via
-		// TrackNewAudioAttributes — no TrackIndex notification is needed.
+		// Per iAP spec, the accessory must send TrackNewAudioAttributes on every
+		// PlayCurrentSelection to open/reopen the USB audio stream. However,
+		// the car's stream-reopen cycle itself causes another PlayCurrentSelection
+		// to arrive ~500ms later, creating a feedback loop if we resend
+		// immediately. Debounce: skip the resend if we sent one within the last
+		// audioAttrDebounce window.
+		if time.Since(h.lastAudioAttrSent) >= audioAttrDebounce {
+			h.lastAudioAttrSent = time.Now()
+			h.audioEstablished = true
+			ipod.Send(tr, &audio.TrackNewAudioAttributes{SampleRate: 44100})
+		}
 	case *PlayControl:
 		wasPlaying := h.playing
 		// Determine the BlueZ MediaPlayer1 method to call on the phone.
 		var avrcpCmd string
 		switch msg.Cmd {
 		case PlayControlToggle:
-			h.playing = !wasPlaying
-			if h.playing {
-				avrcpCmd = "Play"
+			if wasPlaying {
+				// Already playing — keep it playing and don't change state.
+				// The car sends PlayControl(Toggle) every ~30s as a renegotiation
+				// ping while audio is active. If we respond Paused, the car closes
+				// USB audio and sends PlayCurrentSelection, causing a dropout.
+				// Responding Playing (i.e. no state change) makes the car accept
+				// the current state and leave the audio stream alone.
+				h.playing = true
+				avrcpCmd = "" // don't touch the phone
 			} else {
-				avrcpCmd = "Pause"
+				// Was paused — start playing.
+				h.playing = true
+				avrcpCmd = "Play"
 			}
 		case PlayControlPlay:
 			h.playing = true
@@ -249,8 +298,13 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			avrcpCmd = "Pause"
 		case PlayControlNextTrack, PlayControlNext, PlayControlNextChapter:
 			avrcpCmd = "Next"
+			// Car will close the USB audio stream when the track changes;
+			// reset debounce so the following PlayCurrentSelection reopens it.
+			h.lastAudioAttrSent = time.Time{}
 		case PlayControlPrevTrack, PlayControlPrev, PlayControlPrevChapter:
 			avrcpCmd = "Previous"
+			// Same as Next — car closes stream on track change.
+			h.lastAudioAttrSent = time.Time{}
 		case PlayControlStartFF:
 			avrcpCmd = "FastForward"
 		case PlayControlStartRew:
@@ -262,15 +316,23 @@ func (h *ExtRemoteHandler) Handle(req *ipod.Command, tr ipod.CommandWriter, dev 
 			dev.MediaControl(avrcpCmd)
 		}
 		ipod.Respond(req, tr, ackSuccess(req))
-		// Notify the new play state.  Per libiap and rockbox reference
-		// implementations, PlayControl does NOT send TrackIndex — that only
-		// belongs on real track-change events.  Sending TrackIndex here
-		// triggers a DB browse loop.  main.go detects the paused→playing
-		// transition via IsPlaying() and calls audio.ReopenAudio() directly.
+		// Confirm the state change. This specific 0x00+PlayerState format is
+		// what the car expects from PlayControl.
 		ipod.Send(tr, &PlayStatusChangeNotification{
 			EventID:     0x00,
 			PlayerState: byte(h.playerState()),
 		})
+		// When we notify the car we are Paused, do NOT reset audioEstablished.
+		// The ~30s renegotiation cycle is: Toggle→Paused → immediate PlayCurrentSelection.
+		// If we reset here, PlayCurrentSelection will send TrackNewAudioAttributes,
+		// causing the car to tear down and reopen USB audio — creating the very
+		// dropout we're trying to avoid. Audio is only truly closed by the car
+		// after a track skip (handled above in Next/Prev) or USB disconnect.
+		// Do NOT push TrackIndexChanged here. This car never responds to a
+		// TrackIndex push from PlayControl with PlayCurrentSelection — it just
+		// launches an 8-deep ResetDBSelection browse storm and then goes quiet.
+		// Track-change notifications are handled by the AVRCP notifyCh path
+		// in main.go instead.
 	case *GetTrackArtworkTimes:
 		ipod.Respond(req, tr, &RetTrackArtworkTimes{})
 	case *GetShuffle:

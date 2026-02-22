@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os/exec"
+	"sync"
 	"time"
 
 	"os"
@@ -296,6 +297,7 @@ func main() {
 	}
 
 	app.Setup()
+	startBTAliasRefresher()
 	app.Run(os.Args)
 
 }
@@ -345,56 +347,131 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 
 	serde := ipod.CommandSerde{}
 
-	for {
-		inFrame, err := frameTransport.ReadFrame()
-		if err == io.EOF {
-			break
-		}
-		logFrame(inFrame, err, "<< FRAME")
-		if err != nil {
-			continue
-		}
+	type frameResult struct {
+		data []byte
+		err  error
+	}
+	frameCh := make(chan frameResult, 1)
 
-		packetReader := ipod.NewPacketReader(inFrame)
-		inCmdBuf := ipod.CmdBuffer{}
-		for {
-			inPacket, err := packetReader.ReadPacket()
-			if err == io.EOF {
-				break
-			}
-			logPacket(inPacket, err, "<< PACKET")
-			if err != nil {
-				continue
-			}
+	// writeMu guards concurrent writes to frameTransport: the main loop
+	// writes responses to car packets while the notify goroutine may also
+	// write unsolicited track-change frames at any time.
+	var writeMu sync.Mutex
 
-			inCmd, err := serde.UnmarshalCmd(inPacket)
-			logCmd(inCmd, err, "<< CMD")
-			inCmdBuf.WriteCommand(inCmd)
-		}
-
-		outCmdBuf := ipod.CmdBuffer{}
-		devGeneral.cmdWriter = &outCmdBuf
-		for i := range inCmdBuf.Commands {
-			//todo: check return error
-			handlePacket(&outCmdBuf, inCmdBuf.Commands[i])
-		}
-
+	sendCmds := func(outCmdBuf *ipod.CmdBuffer) {
 		for i := range outCmdBuf.Commands {
 			outCmd := outCmdBuf.Commands[i]
 			logCmd(outCmd, nil, ">> CMD")
-
 			outPacket, err := serde.MarshalCmd(outCmd)
 			logPacket(outPacket, err, ">> PACKET")
-
+			if err != nil {
+				continue
+			}
 			packetWriter := ipod.NewPacketWriter()
 			packetWriter.WritePacket(outPacket)
 			outFrame := packetWriter.Bytes()
+			writeMu.Lock()
 			outFrameErr := frameTransport.WriteFrame(outFrame)
+			writeMu.Unlock()
 			logFrame(outFrame, outFrameErr, ">> FRAME")
 		}
-
 	}
-	log.Warnf("EOF")
+
+	startRead := func() {
+		go func() {
+			f, err := frameTransport.ReadFrame()
+			frameCh <- frameResult{f, err}
+		}()
+	}
+	startRead()
+
+	// Subscribe to AVRCP track-change notifications so we can push them
+	// to the car immediately without waiting for the next car poll.
+	var notifyCh <-chan struct{}
+	if avrcpSource != nil {
+		notifyCh = avrcpSource.Notify()
+	}
+
+	// 500ms ticker to push PlayStatusChangeNotification{EventID:0x04, posMs}
+	// via lingo 0x04 (ExtendedInterface). Both rockbox and libiap send this
+	// unconditionally every 500ms in extended mode — it is what drives the
+	// car's on-screen playback timer.
+	positionTicker := time.NewTicker(500 * time.Millisecond)
+	defer positionTicker.Stop()
+
+	for {
+		select {
+		case <-positionTicker.C:
+			if avrcpSource != nil && extRemoteHandler.IsPlaying() {
+				_, posMs, _ := avrcpSource.PlaybackStatus()
+				outCmdBuf := ipod.CmdBuffer{}
+				ipod.Send(&outCmdBuf, &extremote.PlayStatusChangeNotificationPosition{
+					EventID:    0x04,
+					PositionMs: posMs,
+				})
+				sendCmds(&outCmdBuf)
+			}
+
+		case <-notifyCh:
+			// Phone changed track. Only push TrackIndexChanged if the car has
+			// NOT yet opened USB audio (audioEstablished=false). Once audio is
+			// open, a TrackIndex push causes the car to close the audio stream
+			// and wait for a PlayCurrentSelection that never comes from this
+			// car model — killing audio permanently. When audioEstablished is
+			// false (startup, or between a Paused and the following
+			// PlayCurrentSelection) it is safe to push; the car is already
+			// doing its own browse sequence.
+			if avrcpSource.TrackChanged() && !extRemoteHandler.AudioEstablished() {
+				outCmdBuf := ipod.CmdBuffer{}
+				ipod.Send(&outCmdBuf, &extremote.PlayStatusChangeNotificationTrackIndex{
+					EventID:    0x01,
+					TrackIndex: 0,
+				})
+				sendCmds(&outCmdBuf)
+			}
+			// Drain the play-state-changed flag but don't push it — the timer
+			// is driven by position ticks (EventID=0x04 every 500ms), and
+			// spurious Paused→Playing transitions from BlueZ glitches cause
+			// malformed PlaybackStopped frames that break the audio session.
+			if avrcpSource != nil {
+				avrcpSource.PlayStateChanged() // consume flag, no push
+			}
+
+		case fr := <-frameCh:
+			if fr.err == io.EOF {
+				log.Warnf("EOF")
+				return
+			}
+			logFrame(fr.data, fr.err, "<< FRAME")
+			startRead() // queue next read immediately
+			if fr.err != nil {
+				continue
+			}
+
+			packetReader := ipod.NewPacketReader(fr.data)
+			inCmdBuf := ipod.CmdBuffer{}
+			for {
+				inPacket, err := packetReader.ReadPacket()
+				if err == io.EOF {
+					break
+				}
+				logPacket(inPacket, err, "<< PACKET")
+				if err != nil {
+					continue
+				}
+				inCmd, err := serde.UnmarshalCmd(inPacket)
+				logCmd(inCmd, err, "<< CMD")
+				inCmdBuf.WriteCommand(inCmd)
+			}
+
+			outCmdBuf := ipod.CmdBuffer{}
+			devGeneral.cmdWriter = &outCmdBuf
+			for i := range inCmdBuf.Commands {
+				handlePacket(&outCmdBuf, inCmdBuf.Commands[i])
+			}
+			sendCmds(&outCmdBuf)
+		}
+	}
 }
 
 var devGeneral = &DevGeneral{}
@@ -465,13 +542,6 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 			extDev = avrcpSource
 		}
 		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
-		// After PlayCurrentSelection, re-send TrackNewAudioAttributes so the car
-		// reopens its USB audio interface (alt=1).  This must happen exactly once
-		// per PlayCurrentSelection; we do it here rather than in the extremote
-		// handler to keep the audio and extremote packages decoupled.
-		if _, ok := cmd.Payload.(*extremote.PlayCurrentSelection); ok {
-			audio.ReopenAudio(cmdWriter)
-		}
 	case ipod.LingoDigitalAudioID:
 		audio.HandleAudio(cmd, cmdWriter, devAudio)
 	}

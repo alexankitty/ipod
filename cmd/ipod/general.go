@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
@@ -48,13 +54,101 @@ func (d *DevGeneral) SetUIMode(mode general.UIMode) {
 	d.uimode = mode
 }
 
-func (d *DevGeneral) Name() string {
-	if d.BtSource != nil {
-		if name := d.BtSource.ConnectedDeviceName(); name != "" {
-			return name
+// btAlias is a cache of the last known connected Bluetooth device alias.
+var btAlias struct {
+	sync.Mutex
+	value string
+}
+
+// refreshBTAlias queries BlueZ for the connected device Alias and updates the
+// cache. It is always called in a background goroutine so it never blocks the
+// iAP frame read loop.
+func refreshBTAlias() {
+	out, err := exec.Command("busctl", "--system", "tree", "org.bluez").Output()
+	if err != nil {
+		return
+	}
+	var devicePaths []string
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimLeft(strings.TrimSpace(sc.Text()), "├─└│ ")
+		if strings.Contains(line, "/dev_") && !strings.Contains(line, "/player") {
+			devicePaths = append(devicePaths, line)
 		}
 	}
-	return "ipod-gadget"
+
+	type devProps struct {
+		alias     string
+		connected bool
+	}
+	getProps := func(path string) (devProps, bool) {
+		res, err := exec.Command("busctl", "--system", "--json=short",
+			"call", "org.bluez", path,
+			"org.freedesktop.DBus.Properties", "GetAll",
+			"s", "org.bluez.Device1").Output()
+		if err != nil || len(res) == 0 {
+			return devProps{}, false
+		}
+		var wrapper struct {
+			Data []map[string]struct {
+				Data json.RawMessage `json:"data"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(res), &wrapper); err != nil || len(wrapper.Data) == 0 {
+			return devProps{}, false
+		}
+		props := wrapper.Data[0]
+		var dp devProps
+		if v, ok := props["Alias"]; ok {
+			json.Unmarshal(v.Data, &dp.alias)
+		}
+		if v, ok := props["Connected"]; ok {
+			json.Unmarshal(v.Data, &dp.connected)
+		}
+		return dp, dp.alias != ""
+	}
+
+	var fallback string
+	for _, path := range devicePaths {
+		dp, ok := getProps(path)
+		if !ok {
+			continue
+		}
+		if fallback == "" {
+			fallback = dp.alias
+		}
+		if dp.connected {
+			btAlias.Lock()
+			btAlias.value = dp.alias
+			btAlias.Unlock()
+			return
+		}
+	}
+	if fallback != "" {
+		btAlias.Lock()
+		btAlias.value = fallback
+		btAlias.Unlock()
+	}
+}
+
+// startBTAliasRefresher does an immediate async lookup then refreshes every 60s.
+func startBTAliasRefresher() {
+	go func() {
+		refreshBTAlias()
+		for range time.Tick(60 * time.Second) {
+			refreshBTAlias()
+		}
+	}()
+}
+
+func (d *DevGeneral) Name() string {
+	btAlias.Lock()
+	v := btAlias.value
+	btAlias.Unlock()
+	if v == "" {
+		return "ipod-gadget"
+	}
+	return v
 }
 
 func (d *DevGeneral) SoftwareVersion() (major uint8, minor uint8, rev uint8) {
