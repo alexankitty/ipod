@@ -416,11 +416,15 @@ func (a *audioDevice) SetSampleRate(rate uint32) {
 		return
 	}
 	log.WithField("rate", rate).Info("[Audio] sample rate changed, running rate cmd")
-	cmd := exec.Command("sh", "-c", a.sampleRateCmd)
-	cmd.Env = append(cmd.Environ(), fmt.Sprintf("IPOD_SAMPLE_RATE=%d", rate))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.WithError(err).WithField("output", string(out)).Warn("[Audio] sample-rate-cmd failed")
-	}
+	go func() {
+		// Small delay so the TrackNewAudioAttributes ACK reaches the car first.
+		time.Sleep(200 * time.Millisecond)
+		cmd := exec.Command("sh", "-c", a.sampleRateCmd)
+		cmd.Env = append(cmd.Environ(), fmt.Sprintf("IPOD_SAMPLE_RATE=%d", rate))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.WithError(err).WithField("output", string(out)).Warn("[Audio] sample-rate-cmd failed")
+		}
+	}()
 }
 
 var devAudio = &audioDevice{}
