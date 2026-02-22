@@ -29,8 +29,9 @@ type PlayState struct {
 type Source struct {
 	mu           sync.RWMutex
 	state        PlayState
-	deviceName   string // friendly name of the most recently connected BT A2DP device
-	lastTrackLog string // dedup track log lines
+	positionTime time.Time  // wall-clock time when state.Position was last set from BlueZ
+	deviceName   string     // friendly name of the most recently connected BT A2DP device
+	lastTrackLog string     // dedup track log lines
 }
 
 func newPlayState() PlayState {
@@ -42,7 +43,7 @@ func newPlayState() PlayState {
 // NewSource starts a background AVRCP poller and signal watcher, returning immediately.
 // It never returns an error — polling failures are handled gracefully.
 func NewSource() (*Source, error) {
-	s := &Source{state: newPlayState()}
+	s := &Source{state: newPlayState(), positionTime: time.Now()}
 	go s.loop()
 	go s.watchSignals()
 	return s, nil
@@ -51,12 +52,12 @@ func NewSource() (*Source, error) {
 // PlaybackStatus implements extremote.DeviceExtRemote.
 // Returns (trackLength ms, trackPosition ms, playing).
 func (s *Source) PlaybackStatus() (trackLength, trackPos uint32, playing bool) {
-	st := s.snapshot()
+	st, pos := s.snapshotWithPosition()
 	dur := st.Duration
 	if dur == 0 {
 		dur = 300_000 // 5-minute fallback when duration unknown
 	}
-	return dur, st.Position, st.Playing
+	return dur, pos, st.Playing
 }
 
 // TrackTitle implements extremote.DeviceExtRemote.
@@ -75,7 +76,10 @@ func (s *Source) TrackArtist() string { return s.snapshot().Artist }
 func (s *Source) TrackAlbum() string { return s.snapshot().Album }
 
 // TrackPositionMs implements dispremote.DeviceDispRemote.
-func (s *Source) TrackPositionMs() uint32 { return s.snapshot().Position }
+func (s *Source) TrackPositionMs() uint32 {
+	_, pos := s.snapshotWithPosition()
+	return pos
+}
 
 // TrackLengthMs implements dispremote.DeviceDispRemote.
 func (s *Source) TrackLengthMs() uint32 {
@@ -138,6 +142,27 @@ func (s *Source) snapshot() PlayState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
+}
+
+// snapshotWithPosition returns the current state and an interpolated position.
+// When playing, it adds time elapsed since the last BlueZ position update so
+// the car sees a continuously advancing position rather than a frozen one.
+func (s *Source) snapshotWithPosition() (PlayState, uint32) {
+	s.mu.RLock()
+	st := s.state
+	pt := s.positionTime
+	s.mu.RUnlock()
+
+	pos := st.Position
+	if st.Playing {
+		elapsed := uint32(time.Since(pt).Milliseconds())
+		pos += elapsed
+		// Don't overshoot the track duration.
+		if st.Duration > 0 && pos > st.Duration {
+			pos = st.Duration
+		}
+	}
+	return st, pos
 }
 
 func (s *Source) loop() {
@@ -289,8 +314,10 @@ func (s *Source) refresh() {
 
 	gotAny := false
 
+	var newPositionTime time.Time
 	if pos, ok := getUint32(props, "Position"); ok {
 		next.Position = pos
+		newPositionTime = time.Now()
 		gotAny = true
 	}
 
@@ -345,5 +372,8 @@ func (s *Source) refresh() {
 	}
 	s.mu.Lock()
 	s.state = next
+	if !newPositionTime.IsZero() {
+		s.positionTime = newPositionTime
+	}
 	s.mu.Unlock()
 }
