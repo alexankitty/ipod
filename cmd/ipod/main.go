@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os/exec"
 	"time"
 
 	"os"
@@ -131,9 +132,15 @@ func main() {
 					Name:  "write-trace, w",
 					Usage: "Write trace to a `file`",
 				},
+				cli.StringFlag{
+					Name:  "sample-rate-cmd",
+					Value: "systemctl restart bluealsa-aplay",
+					Usage: "Shell command to run when the negotiated sample rate changes (rate passed as $IPOD_SAMPLE_RATE)",
+				},
 			},
 			Action: func(c *cli.Context) error {
 				initAVRCP()
+				devAudio.sampleRateCmd = c.String("sample-rate-cmd")
 
 				path := c.Args().First()
 				if path == "" {
@@ -392,6 +399,31 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 
 var devGeneral = &DevGeneral{}
 
+// audioDevice implements audio.DeviceAudio.  SetSampleRate runs a
+// configurable shell command so the ALSA gadget is reopened at the
+// negotiated rate (e.g. restarting bluealsa-aplay).
+type audioDevice struct {
+	sampleRateCmd string
+	lastRate      uint32
+}
+
+func (a *audioDevice) SetSampleRate(rate uint32) {
+	if rate == a.lastRate {
+		return
+	}
+	a.lastRate = rate
+	if a.sampleRateCmd == "" {
+		return
+	}
+	log.WithField("rate", rate).Info("[Audio] sample rate changed, running rate cmd")
+	cmd := exec.Command("sh", "-c", a.sampleRateCmd)
+	cmd.Env = append(cmd.Environ(), fmt.Sprintf("IPOD_SAMPLE_RATE=%d", rate))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.WithError(err).WithField("output", string(out)).Warn("[Audio] sample-rate-cmd failed")
+	}
+}
+
+var devAudio = &audioDevice{}
 var avrcpSource *avrcp.Source
 
 // extRemoteHandler is reset for every new USB session in processFrames so that
@@ -428,22 +460,9 @@ func handlePacket(cmdWriter ipod.CommandWriter, cmd *ipod.Command) {
 		if avrcpSource != nil {
 			extDev = avrcpSource
 		}
-		wasPlaying := extRemoteHandler.IsPlaying()
 		extRemoteHandler.Handle(cmd, cmdWriter, extDev)
-		nowPlaying := extRemoteHandler.IsPlaying()
-		// Reopen the USB audio interface (TrackNewAudioAttributes) whenever we
-		// transition from paused to playing — either via PlayControl(Toggle/Play)
-		// or via PlayCurrentSelection.  This avoids needing TrackIndex
-		// notifications (which trigger DB browse loops) while still ensuring
-		// the car opens alt=1 when audio should start flowing.
-		if (!wasPlaying && nowPlaying) {
-			audio.ReopenAudio(cmdWriter)
-		}
-		if _, ok := cmd.Payload.(*extremote.PlayCurrentSelection); ok {
-			audio.ReopenAudio(cmdWriter)
-		}
 	case ipod.LingoDigitalAudioID:
-		audio.HandleAudio(cmd, cmdWriter, nil)
+		audio.HandleAudio(cmd, cmdWriter, devAudio)
 	}
 }
 func dirPrefix(dir trace.Dir, text string) string {
