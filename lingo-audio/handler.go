@@ -52,48 +52,14 @@ func HandleAudio(req *ipod.Command, tr ipod.CommandWriter, dev DeviceAudio) erro
 		// No additional action needed
 
 	case *RetAccSampleRateCaps:
-		// Build a set of rates the local audio backend (BlueALSA) supports.
-		// If the backend returns an empty list treat all car rates as eligible.
-		var localRates map[uint32]bool
-		if dev != nil {
-			if local := dev.SupportedSampleRates(); len(local) > 0 {
-				localRates = make(map[uint32]bool, len(local))
-				for _, r := range local {
-					localRates[r] = true
-				}
-			}
-		}
-
-		// Pick the highest rate supported by both the car and the local backend.
-		var bestRate uint32 = 44100
-		foundMatch := false
-		for _, rate := range msg.SampleRates {
-			if localRates != nil && !localRates[rate] {
-				continue // local backend cannot deliver this rate
-			}
-			if rate > bestRate || !foundMatch {
-				bestRate = rate
-				foundMatch = true
-			}
-		}
-		// If the intersection was empty (local constraint vs car caps) fall back
-		// to 44100, which every car and codec combination should tolerate.
-		// foundMatch == false means we stick with the 44100 default.
-
-		negotiatedRate = bestRate
-
 		ipod.Respond(req, tr, &AccAck{
 			Status: ACKStatusSuccess,
 			CmdID:  0x03, // RetAccSampleRateCaps command ID
 		})
 		// Inform the car which rate we will stream at.
 		ipod.Send(tr, &TrackNewAudioAttributes{
-			SampleRate: bestRate,
+			SampleRate: 44100,
 		})
-		// Notify the local audio stack so it can open ALSA at this rate.
-		if dev != nil {
-			dev.SetSampleRate(bestRate)
-		}
 
 	case *TrackNewAudioAttributes:
 		// Car sends audio attributes and is ready for audio
