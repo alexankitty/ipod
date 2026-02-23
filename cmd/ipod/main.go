@@ -525,7 +525,7 @@ func (a *audioDevice) SupportedSampleRates() []uint32 {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimLeft(sc.Text(), "├─└│ ")
-		if strings.HasPrefix(line, "/org/bluealsa") && strings.Contains(line, "a2dpsrc") {
+		if strings.HasPrefix(line, "/org/bluealsa") && strings.Contains(line, "a2dpsnk") {
 			paths = append(paths, line)
 		}
 	}
@@ -539,7 +539,7 @@ func (a *audioDevice) SupportedSampleRates() []uint32 {
 	for _, path := range paths {
 		propOut, err := exec.Command("busctl", "--system", "--json=short",
 			"get-property", "org.bluealsa", path,
-			"org.bluealsa.PCM1", "SamplingFrequency").Output()
+			"org.bluealsa.PCM1", "Rate").Output()
 		if err != nil || len(propOut) == 0 {
 			continue
 		}
