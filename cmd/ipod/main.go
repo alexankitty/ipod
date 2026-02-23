@@ -417,15 +417,14 @@ func processFrames(frameTransport ipod.FrameReadWriter) {
 			}
 
 		case <-notifyCh:
-			// Phone changed track. Only push TrackIndexChanged if the car has
-			// NOT yet opened USB audio (audioEstablished=false). Once audio is
-			// open, a TrackIndex push causes the car to close the audio stream
-			// and wait for a PlayCurrentSelection that never comes from this
-			// car model — killing audio permanently. When audioEstablished is
-			// false (startup, or between a Paused and the following
-			// PlayCurrentSelection) it is safe to push; the car is already
-			// doing its own browse sequence.
-			if avrcpSource.TrackChanged() && !extRemoteHandler.AudioEstablished() {
+			// Phone changed track — push TrackIndexChanged so the car refreshes
+			// its display with the new title/artist/album. The car will respond
+			// with PlayCurrentSelection, which reopens the USB audio stream via
+			// TrackNewAudioAttributes. Reset the audio debounce so that
+			// PlayCurrentSelection always fires TrackNewAudioAttributes even if
+			// one was sent recently for the previous track.
+			if avrcpSource.TrackChanged() {
+				extRemoteHandler.OnTrackChanged()
 				outCmdBuf := ipod.CmdBuffer{}
 				ipod.Send(&outCmdBuf, &extremote.PlayStatusChangeNotificationTrackIndex{
 					EventID:    0x01,

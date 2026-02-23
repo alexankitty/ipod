@@ -58,10 +58,9 @@ type ExtRemoteHandler struct {
 // NewExtRemoteHandler returns a handler with playing=false (paused initial
 // state) and audioEstablished=true. The audio lingo always sends
 // TrackNewAudioAttributes during IDPS before any ExtRemote commands arrive,
-// so the stream is already open. Starting audioEstablished=true prevents
-// spurious TrackIndex pushes from notifyCh during start-up.
-// lastAudioAttrSent starts zero so the first PlayCurrentSelection always
-// sends TrackNewAudioAttributes (bypassing the debounce).
+// so the stream is already open. lastAudioAttrSent starts zero so the first
+// PlayCurrentSelection always sends TrackNewAudioAttributes (bypassing the
+// debounce).
 func NewExtRemoteHandler() *ExtRemoteHandler {
 	return &ExtRemoteHandler{audioEstablished: true}
 }
@@ -71,9 +70,15 @@ func NewExtRemoteHandler() *ExtRemoteHandler {
 func (h *ExtRemoteHandler) IsPlaying() bool { return h.playing }
 
 // AudioEstablished reports whether the USB audio stream has been opened at
-// least once this session, used to gate spontaneous TrackIndex pushes from
-// the AVRCP notifyCh.
+// least once this session.
 func (h *ExtRemoteHandler) AudioEstablished() bool { return h.audioEstablished }
+
+// OnTrackChanged resets the audio-attributes debounce so that the
+// PlayCurrentSelection which follows a car-side TrackIndexChanged notification
+// always sends TrackNewAudioAttributes to reopen the USB audio stream.
+func (h *ExtRemoteHandler) OnTrackChanged() {
+	h.lastAudioAttrSent = time.Time{}
+}
 
 func (h *ExtRemoteHandler) playerState() PlayerState {
 	if h.playing {

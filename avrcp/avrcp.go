@@ -30,14 +30,14 @@ type PlayState struct {
 type Source struct {
 	mu               sync.RWMutex
 	state            PlayState
-	positionTime     time.Time    // wall-clock time when state.Position was last set from BlueZ
-	posRefreshedAt   time.Time    // wall-clock time when position was last refreshed while playing
-	deviceName       string       // friendly name of the most recently connected BT A2DP device
-	lastTrackLog     string       // dedup track log lines
-	trackChanged     uint32       // atomic: 1 when new track data arrived, cleared by TrackChanged()
-	playStateChanged uint32       // atomic: 1 when Playing transitions, cleared by PlayStateChanged()
-	lastKnownTitle   string       // detect title changes to avoid spurious notifications
-	lastKnownPlaying bool         // detect play/pause transitions
+	positionTime     time.Time     // wall-clock time when state.Position was last set from BlueZ
+	posRefreshedAt   time.Time     // wall-clock time when position was last refreshed while playing
+	deviceName       string        // friendly name of the most recently connected BT A2DP device
+	lastTrackLog     string        // dedup track log lines
+	trackChanged     uint32        // atomic: 1 when new track data arrived, cleared by TrackChanged()
+	playStateChanged uint32        // atomic: 1 when Playing transitions, cleared by PlayStateChanged()
+	lastKnownTitle   string        // detect title changes to avoid spurious notifications
+	lastKnownPlaying bool          // detect play/pause transitions
 	notifyCh         chan struct{} // signalled (non-blocking) on track change or play state change
 }
 
